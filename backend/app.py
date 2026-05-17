@@ -405,35 +405,63 @@ async def batch_embed_watermark(
 
 
 # 水印长度档位（名字补齐到此长度，提取时无需知道名字）
+# 使用 'x' + hex 编码：保证所有名字的比特长度完全一致
 WM_LENGTH_TIERS = {
-    "short": 32,    # 短名：张三、李四
-    "medium": 128,  # 中等：邮箱、用户ID、短句
-    "long": 256,    # 长文本：句子、URL、版权声明
+    "short": 16,    # 短名：张三（hex后≈12字符+前缀，兼容小图）
+    "medium": 32,   # 中等：邮箱、用户ID
+    "long": 64,     # 长文本：句子、URL
 }
-DEFAULT_TIER = "medium"
-PADDING_CHAR = " "  # 用空格补齐，\x00 会导致提取乱码
+DEFAULT_TIER = "short"
+PREFIX = "x"       # 固定前缀，确保首字节一致，比特长度不因内容变化
+PAD_CHAR = "0"     # hex 补齐字符
 
 
 def _pad_name(name: str, tier: str = DEFAULT_TIER) -> str:
-    """将名字补齐到指定档位的固定长度"""
+    """将名字编码为 hex + 固定前缀 + 补齐到固定长度（保证比特长度一致）"""
+    hex_name = name.encode("utf-8").hex()
     max_len = WM_LENGTH_TIERS.get(tier, WM_LENGTH_TIERS[DEFAULT_TIER])
-    if len(name) > max_len:
-        raise ValueError(f"文字长度({len(name)})超过档位上限({max_len})，请选择更高的档位")
-    return name.ljust(max_len, PADDING_CHAR)[:max_len]
+    # 格式: "x" + hex_name + "000...0"，总长 = max_len
+    content_len = max_len - 1  # 减去前缀 'x'
+    if len(hex_name) > content_len:
+        raise ValueError(
+            f"名字太长：编码后{len(hex_name)}字符，上限{content_len}字符。"
+            f"请缩短名字或选择更高档位"
+        )
+    return PREFIX + hex_name.ljust(content_len, PAD_CHAR)[:content_len]
 
 
 def _unpad_name(text: str) -> str:
-    """去除补齐字符"""
-    return text.rstrip(PADDING_CHAR).strip()
+    """去除前缀和补齐字符，解码回名字"""
+    if not text or len(text) < 2:
+        return ""
+    hex_str = text[1:].rstrip(PAD_CHAR).strip()  # 去掉前缀 'x' 和尾部 '0'
+    if not hex_str:
+        return ""
+    try:
+        return bytes.fromhex(hex_str).decode("utf-8")
+    except Exception:
+        return text  # 解码失败返回原文
 
 
 def _get_fixed_wm_length(tier: str = DEFAULT_TIER, password_wm: int = 1) -> int:
-    """计算指定档位对应的比特长度"""
+    """计算指定档位对应的比特长度（使用与 _pad_name 相同的模板）"""
     max_len = WM_LENGTH_TIERS.get(tier, WM_LENGTH_TIERS[DEFAULT_TIER])
-    padded = "x".ljust(max_len, PADDING_CHAR)[:max_len]
+    # 模板必须和实际嵌入的格式一致：'x' + hex chars
+    template = PREFIX + "f" * (max_len - 1)
     bwm = WaterMark(password_wm=password_wm)
-    bwm.read_wm(padded, mode="str")
+    bwm.read_wm(template, mode="str")
     return len(bwm.wm_bit)
+
+
+def _ensure_min_size(img: Image.Image, min_dim: int = 300) -> Image.Image:
+    """确保图片足够大以嵌入水印（太小则放大）"""
+    w, h = img.size
+    if w < min_dim or h < min_dim:
+        scale = max(min_dim / w, min_dim / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        logger.info(f"图片太小({w}x{h})，放大到({new_w}x{new_h})")
+    return img
 
 
 @app.post("/api/distribute")
@@ -468,6 +496,9 @@ async def distribute_watermark(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"图片格式错误: {str(e)}")
 
+    # 确保图片够大
+    img = _ensure_min_size(img, 300)
+
     task_id = uuid.uuid4().hex[:12]
     ori_path = TEMP_DIR / f"dist_ori_{task_id}.png"
     img.save(ori_path, "PNG")
@@ -476,22 +507,45 @@ async def distribute_watermark(
     results = []
 
     try:
+        # 先用第一个名字测试图片容量，自动降级档位
+        actual_tier = tier
+        for test_tier in [tier] if tier != "auto" else list(WM_LENGTH_TIERS.keys()):
+            try:
+                test_padded = _pad_name(name_list[0], test_tier)
+                bwm_test = WaterMark(password_img=password_img, password_wm=password_wm)
+                bwm_test.read_img(str(ori_path))
+                bwm_test.read_wm(test_padded, mode="str")
+                # 如果没报错，说明容量够
+                actual_tier = test_tier
+                del bwm_test
+                break
+            except Exception:
+                continue
+        logger.info(f"使用档位: {actual_tier}")
+
         with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
             for idx, name in enumerate(name_list):
                 out_path = TEMP_DIR / f"dist_{task_id}_{idx}.png"
                 try:
                     # 补齐到指定档位的固定长度
-                    padded_name = _pad_name(name, tier)
+                    padded_name = _pad_name(name, actual_tier)
 
                     bwm = WaterMark(password_img=password_img, password_wm=password_wm)
                     bwm.read_img(str(ori_path))
                     bwm.read_wm(padded_name, mode="str")
                     bwm.embed(str(out_path))
 
-                    # ZIP内文件名用安全字符
-                    safe_name = "".join(c for c in name if c.isalnum() or '\u4e00' <= c <= '\u9fff' or c in "_ -") or "unnamed"
+                    # ZIP内文件名：用数字ID + 英文名（避免中文编码问题）
+                    safe_name = f"{idx+1}_{name}".replace(" ", "_")
+                    # 仅保留安全字符
+                    safe_name = "".join(c for c in safe_name if c.isalnum() or '\u4e00' <= c <= '\u9fff' or c in "_-") or f"unnamed_{idx}"
                     arcname = f"{safe_name}.png"
-                    zf.write(str(out_path), arcname)
+                    # 使用 ZipInfo 设置 UTF-8 标志，避免 latin-1 编码错误
+                    info = zipfile.ZipInfo(arcname)
+                    info.flag_bits |= 0x800  # UTF-8 flag
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    with open(str(out_path), "rb") as f:
+                        zf.writestr(info, f.read())
 
                     results.append({"name": name, "status": "success", "filename": arcname})
                     logger.info(f"分发嵌入成功: {name}")
