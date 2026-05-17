@@ -58,16 +58,18 @@ async def embed_watermark(
     watermark_text: str = Form("", description="水印文字"),
     password_img: int = Form(1, description="图片密码"),
     password_wm: int = Form(1, description="水印密码"),
+    tier: str = Form("", description="长度档位: short/medium/long，留空则用原始长度"),
 ):
     """
-    嵌入文字盲水印到图片中
+    嵌入文字盲水印到图片中。
+    - tier 为空时：使用原始文字长度（提取时需提供 wm_length）
+    - tier 指定时：自动编码补齐到固定长度（提取时无需 wm_length）
     """
     cleanup_old_files()
 
     if not watermark_text:
         raise HTTPException(status_code=400, detail="水印文字不能为空")
 
-    # 读取图片
     image_bytes = await image.read()
     if len(image_bytes) > 20 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="图片大小不能超过 20MB")
@@ -79,7 +81,6 @@ async def embed_watermark(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"图片格式错误: {str(e)}")
 
-    # 保存原图到临时文件
     task_id = uuid.uuid4().hex[:12]
     ori_path = TEMP_DIR / f"ori_{task_id}.png"
     out_path = TEMP_DIR / f"embed_{task_id}.png"
@@ -87,27 +88,41 @@ async def embed_watermark(
     try:
         img.save(ori_path, "PNG")
 
-        # 嵌入水印
+        use_fixed = bool(tier and tier in WM_LENGTH_TIERS)
+        if use_fixed:
+            # 固定长度模式：x + hex 编码
+            wm_text = _pad_name(watermark_text, tier)
+            # 确保图片够大
+            img2 = _ensure_min_size(img, 300)
+            if img2.size != img.size:
+                img2.save(ori_path, "PNG")
+        else:
+            wm_text = watermark_text
+
         bwm = WaterMark(password_img=password_img, password_wm=password_wm)
         bwm.read_img(str(ori_path))
-        bwm.read_wm(watermark_text, mode="str")
+        bwm.read_wm(wm_text, mode="str")
         bwm.embed(str(out_path))
 
         wm_len = len(bwm.wm_bit)
 
         logger.info(
             f"嵌入成功: task={task_id}, wm_len={wm_len}, "
-            f"text='{watermark_text[:20]}...'"
+            f"text='{watermark_text[:20]}...', fixed={use_fixed}, tier={tier}"
         )
+
+        headers = {
+            "X-WM-Length": str(wm_len),
+            "X-Task-ID": task_id,
+        }
+        if use_fixed:
+            headers["X-Fixed-Tier"] = tier
 
         return FileResponse(
             str(out_path),
             media_type="image/png",
             filename=f"watermarked_{task_id}.png",
-            headers={
-                "X-WM-Length": str(wm_len),
-                "X-Task-ID": task_id,
-            },
+            headers=headers,
         )
 
     except Exception as e:
@@ -120,17 +135,17 @@ async def embed_watermark(
 @app.post("/api/extract")
 async def extract_watermark(
     image: UploadFile = File(..., description="带水印的图片"),
-    wm_length: int = Form(..., description="水印比特长度"),
+    wm_length: int = Form(0, description="水印比特长度（档位模式时为0）"),
+    tier: str = Form("", description="长度档位: short/medium/long/auto，留空用 wm_length"),
     password_img: int = Form(1, description="图片密码"),
     password_wm: int = Form(1, description="水印密码"),
 ):
     """
-    从图片中提取文字盲水印
+    从图片中提取文字盲水印。
+    - 指定 tier 时：按档位提取（支持 auto 自动遍历），自动解码 hex 编码
+    - 指定 wm_length 时：按传统模式提取原始文字
     """
     cleanup_old_files()
-
-    if wm_length <= 0:
-        raise HTTPException(status_code=400, detail="水印长度必须大于 0")
 
     image_bytes = await image.read()
     if len(image_bytes) > 20 * 1024 * 1024:
@@ -149,20 +164,53 @@ async def extract_watermark(
     try:
         img.save(img_path, "PNG")
 
-        # 提取水印
+        # 档位模式
+        use_tier = bool(tier and tier in WM_LENGTH_TIERS or tier == "auto")
+        if use_tier:
+            tiers_to_try = list(WM_LENGTH_TIERS.keys()) if tier == "auto" else [tier]
+            best_name = ""
+            best_tier = ""
+            all_results = []
+
+            for t in tiers_to_try:
+                try:
+                    wm_len = _get_fixed_wm_length(t, password_wm)
+                    bwm = WaterMark(password_img=password_img, password_wm=password_wm)
+                    extracted = bwm.extract(str(img_path), wm_shape=wm_len, mode="str")
+                    name = _unpad_name(extracted)
+                    has_content = bool(name and any(c.isalnum() or '\u4e00' <= c <= '\u9fff' for c in name))
+                    all_results.append({"tier": t, "name": name, "valid": has_content})
+                    if has_content and not best_name:
+                        best_name = name
+                        best_tier = t
+                except Exception:
+                    pass
+
+            logger.info(f"提取成功(档位模式): task={task_id}, name='{best_name}', tier={best_tier}")
+            return JSONResponse({
+                "success": True,
+                "watermark": best_name,
+                "decoded_name": best_name,
+                "tier": best_tier,
+                "task_id": task_id,
+            })
+
+        # 传统模式
+        if wm_length <= 0:
+            raise HTTPException(status_code=400, detail="请指定 wm_length 或 tier")
+
         bwm = WaterMark(password_img=password_img, password_wm=password_wm)
         wm_extract = bwm.extract(str(img_path), wm_shape=wm_length, mode="str")
 
-        logger.info(
-            f"提取成功: task={task_id}, result='{wm_extract[:50]}...'"
-        )
-
+        logger.info(f"提取成功: task={task_id}, result='{wm_extract[:50]}...'")
         return JSONResponse({
             "success": True,
             "watermark": wm_extract,
             "task_id": task_id,
         })
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"提取失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"提取水印失败: {str(e)}")

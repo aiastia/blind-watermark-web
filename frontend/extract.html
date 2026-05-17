@@ -49,15 +49,29 @@
     <div style="margin-bottom:20px;">
       <label>提取方式</label>
       <div class="nav-bar" style="margin:0;">
-        <button class="nav-link" :class="{active: mode==='text'}" @click="mode='text'" style="font-size:13px;cursor:pointer;">💡 输入水印文字（推荐）</button>
-        <button class="nav-link" :class="{active: mode==='len'}" @click="mode='len'" style="font-size:13px;cursor:pointer;">📏 输入水印长度</button>
+        <button class="nav-link" :class="{active: mode==='tier'}" @click="mode='tier'" style="font-size:13px;cursor:pointer;">🎯 按档位 <span class="badge badge-purple" style="font-size:10px;">推荐</span></button>
+        <button class="nav-link" :class="{active: mode==='text'}" @click="mode='text'" style="font-size:13px;cursor:pointer;">💡 输入文字</button>
+        <button class="nav-link" :class="{active: mode==='len'}" @click="mode='len'" style="font-size:13px;cursor:pointer;">📏 输入长度</button>
       </div>
+    </div>
+
+    <div v-if="mode==='tier'" style="margin-bottom:20px;">
+      <label>选择档位</label>
+      <div class="nav-bar" style="margin:0;">
+        <button v-for="t in tiers" :key="t.key" class="nav-link" :class="{active: tier===t.key}" @click="tier=t.key" style="cursor:pointer;font-size:12px;">
+          {{ t.icon }} {{ t.label }}
+        </button>
+        <button class="nav-link" :class="{active: tier==='auto'}" @click="tier='auto'" style="cursor:pointer;font-size:12px;">
+          🔄 自动
+        </button>
+      </div>
+      <p class="hint">💡 选择嵌入时相同的档位即可，或用「自动」遍历所有档位</p>
     </div>
 
     <div v-if="mode==='text'" style="margin-bottom:20px;">
       <label>水印文字（嵌入时输入的文字）</label>
       <input type="text" class="input-field" v-model="wmText" placeholder="输入嵌入时的水印文字，系统自动计算长度...">
-      <p class="hint">💡 相同文字 + 相同密码 = 固定长度，无需记住数字</p>
+      <p class="hint">💡 相同文字 + 相同密码 = 固定长度</p>
     </div>
 
     <div v-if="mode==='len'" style="margin-bottom:20px;">
@@ -71,7 +85,7 @@
     </div>
 
     <button class="btn btn-primary btn-block"
-            :disabled="!file || loading || (mode==='text' ? !wmText : !wmLen)"
+            :disabled="!file || loading || (mode==='text' ? !wmText : mode==='len' ? !wmLen : false)"
             @click="doExtract">
       <span v-if="loading" class="spinner"></span>
       <span v-else>🔍</span> 提取水印
@@ -98,9 +112,15 @@ const { createApp, ref } = Vue;
 createApp({
   setup() {
     const file = ref(null), preview = ref('');
-    const mode = ref('text'), wmText = ref(''), wmLen = ref(null);
+    const mode = ref('tier'), wmText = ref(''), wmLen = ref(null);
     const pwdImg = ref(1), pwdWm = ref(1);
     const loading = ref(false), error = ref(''), result = ref('');
+    const tier = ref('short');
+    const tiers = [
+      { key: 'short', icon: '🔹', label: '短名' },
+      { key: 'medium', icon: '🔷', label: '中等' },
+      { key: 'long', icon: '💠', label: '长文本' },
+    ];
 
     function setFile(f) {
       file.value = f; preview.value = URL.createObjectURL(f);
@@ -117,31 +137,35 @@ createApp({
       loading.value = true; error.value = ''; result.value = '';
 
       try {
-        let length = wmLen.value;
-
-        // 方式一：通过文字计算长度
-        if (mode.value === 'text') {
-          const resp = await fetch(`${window.location.origin}/api/wm_length?text=${encodeURIComponent(wmText.value)}&password_wm=${pwdWm.value}`);
-          if (!resp.ok) throw new Error('计算水印长度失败');
-          const data = await resp.json();
-          length = data.wm_length;
-        }
-
         const fd = new FormData();
         fd.append('image', file.value);
-        fd.append('wm_length', length);
         fd.append('password_img', pwdImg.value);
         fd.append('password_wm', pwdWm.value);
 
+        if (mode.value === 'tier') {
+          // 档位模式：直接传 tier
+          fd.append('tier', tier.value);
+          fd.append('wm_length', '0');
+        } else if (mode.value === 'text') {
+          // 文字模式：先算长度
+          const resp = await fetch(`${window.location.origin}/api/wm_length?text=${encodeURIComponent(wmText.value)}&password_wm=${pwdWm.value}`);
+          if (!resp.ok) throw new Error('计算水印长度失败');
+          const data = await resp.json();
+          fd.append('wm_length', data.wm_length);
+        } else {
+          fd.append('wm_length', wmLen.value);
+        }
+
         const data = await utils.fetchJSON('/api/extract', fd);
-        result.value = data.watermark;
+        // 档位模式返回 decoded_name，传统模式返回 watermark
+        result.value = data.decoded_name || data.watermark;
       } catch (e) { error.value = e.message; }
       finally { loading.value = false; }
     }
 
     function copyResult() { utils.copyText(result.value); }
 
-    return { file, preview, mode, wmText, wmLen, pwdImg, pwdWm, loading, error, result, handleFile, handleDrop, doExtract, copyResult };
+    return { file, preview, mode, wmText, wmLen, pwdImg, pwdWm, loading, error, result, tier, tiers, handleFile, handleDrop, doExtract, copyResult };
   }
 }).mount('#app');
 </script>
