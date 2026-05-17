@@ -67,7 +67,7 @@
         <label>水印长度档位</label>
         <div class="nav-bar" style="margin:0;">
           <button v-for="t in tiers" :key="t.key" class="nav-link" :class="{active: tier===t.key}" @click="tier=t.key" style="cursor:pointer;font-size:12px;">
-            {{ t.icon }} {{ t.label }}<br><span style="font-size:11px;color:var(--text-muted);">≤{{ t.max }}字</span>
+            {{ t.icon }} {{ t.label }}<br><span style="font-size:11px;color:var(--text-muted);">{{ t.desc }}</span>
           </button>
         </div>
         <p class="hint">💡 名字会自动补齐到固定长度，选择能容纳最长名字的档位</p>
@@ -196,9 +196,9 @@ createApp({
     const loading = ref(false);
     const tier = ref('short');
     const tiers = [
-      { key: 'short', icon: '🔹', label: '短名', max: 16 },
-      { key: 'medium', icon: '🔷', label: '中等', max: 32 },
-      { key: 'long', icon: '💠', label: '长文本', max: 64 },
+      { key: 'short', icon: '🔹', label: '短名', desc: '≤2中文 / 7英文' },
+      { key: 'medium', icon: '🔷', label: '中等', desc: '≤5中文 / 15英文' },
+      { key: 'long', icon: '💠', label: '长文本', desc: '≤10中文 / 31英文' },
     ];
 
     // === 分发 ===

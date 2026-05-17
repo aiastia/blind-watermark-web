@@ -55,7 +55,7 @@
       <label>长度档位 <span class="badge badge-purple">推荐</span></label>
       <div class="nav-bar" style="margin:0;">
         <button v-for="t in tiers" :key="t.key" class="nav-link" :class="{active: tier===t.key}" @click="tier=t.key" style="cursor:pointer;font-size:12px;">
-          {{ t.icon }} {{ t.label }}<br><span style="font-size:11px;color:var(--text-muted);">≤{{ t.max }}字</span>
+          {{ t.icon }} {{ t.label }}<br><span style="font-size:11px;color:var(--text-muted);">{{ t.desc }}</span>
         </button>
         <button class="nav-link" :class="{active: !tier}" @click="tier=''" style="cursor:pointer;font-size:12px;">
           🔢 自定义<br><span style="font-size:11px;color:var(--text-muted);">需记长度</span>
@@ -137,9 +137,9 @@ createApp({
     const loading = ref(false), error = ref(''), result = ref(null);
     const tier = ref('short');
     const tiers = [
-      { key: 'short', icon: '🔹', label: '短名', max: 7 },
-      { key: 'medium', icon: '🔷', label: '中等', max: 15 },
-      { key: 'long', icon: '💠', label: '长文本', max: 31 },
+      { key: 'short', icon: '🔹', label: '短名', desc: '≤2中文 / 7英文' },
+      { key: 'medium', icon: '🔷', label: '中等', desc: '≤5中文 / 15英文' },
+      { key: 'long', icon: '💠', label: '长文本', desc: '≤10中文 / 31英文' },
     ];
 
     function setFile(f) {
