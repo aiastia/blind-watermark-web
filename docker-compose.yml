@@ -2,9 +2,7 @@ version: '3.8'
 
 services:
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/aiastia/blind-watermark-web/web:main
     ports:
       - "8000:8000"
     environment:
@@ -14,9 +12,7 @@ services:
     restart: unless-stopped
 
   bot:
-    build:
-      context: .
-      dockerfile: Dockerfile.bot
+    image: ghcr.io/aiastia/blind-watermark-web/bot:main
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
     volumes:

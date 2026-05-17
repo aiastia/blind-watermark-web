@@ -27,6 +27,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_WEB: ghcr.io/${{ github.repository }}/web
   IMAGE_BOT: ghcr.io/${{ github.repository }}/bot
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
