@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>追踪分发 - 盲水印工具</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="css/style.css" rel="stylesheet">
+</head>
+<body>
+<header class="site-header">
+  <div style="max-width:800px;margin:0 auto;padding:0 20px;">
+    <h1>🔐 盲水印工具</h1>
+    <p>基于 DWT-DCT-SVD · 嵌入不可见水印 · 无需原图提取 · 支持批量</p>
+    <nav class="nav-bar">
+      <a href="index.html" class="nav-link">📝 嵌入水印</a>
+      <a href="batch.html" class="nav-link">📦 批量嵌入</a>
+      <a href="extract.html" class="nav-link">🔍 提取水印</a>
+      <a href="track.html" class="nav-link active">🎯 追踪分发</a>
+    </nav>
+  </div>
+</header>
+
+<div class="container">
+  <div class="card fade-in" id="app">
+    <div style="margin-bottom:24px;">
+      <div class="nav-bar" style="margin:0;">
+        <button class="nav-link" :class="{active: tab==='distribute'}" @click="tab='distribute'" style="cursor:pointer;">📤 分发图片</button>
+        <button class="nav-link" :class="{active: tab==='track'}" @click="tab='track'" style="cursor:pointer;">🕵️ 追踪泄漏</button>
+      </div>
+    </div>
+
+    <!-- ========== 分发模式 ========== -->
+    <template v-if="tab==='distribute'">
+      <h2 class="section-title">📤 分发追踪</h2>
+      <p style="color:var(--text-muted);font-size:14px;margin-bottom:20px;">
+        一张图片 + 多人名单 → 每人一份带唯一水印的图，泄漏时直接追踪
+      </p>
+
+      <div style="margin-bottom:20px;">
+        <label>原始图片</label>
+        <div class="drop-zone" :class="{'has-file': distFile}"
+             @click="$refs.distInput.click()"
+             @dragover.prevent="$event.currentTarget.classList.add('dragover')"
+             @dragleave="$event.currentTarget.classList.remove('dragover')"
+             @drop.prevent="handleDistDrop($event)">
+          <input type="file" ref="distInput" accept="image/*" @change="handleDistFile($event)" style="display:none">
+          <template v-if="!distFile">
+            <div class="icon">📷</div>
+            <p style="font-weight:500;">点击或拖拽上传图片</p>
+          </template>
+          <template v-else>
+            <img :src="distPreview" class="preview-img" alt="预览">
+            <p class="file-info">✅ {{ distFile.name }}</p>
+          </template>
+        </div>
+      </div>
+
+      <div style="margin-bottom:20px;">
+        <label>接收者名单 <span class="badge badge-purple" v-if="nameList.length">{{ nameList.length }} 人</span></label>
+        <textarea class="input-field" v-model="names" placeholder="每行一个名字，或用逗号分隔&#10;例如：张三, 李四, 王五" rows="4" style="resize:vertical;"></textarea>
+        <p class="hint">💡 名字会自动补齐到固定长度，追踪时无需知道名字即可提取</p>
+      </div>
+
+      <div class="grid-2" style="margin-bottom:24px;">
+        <div><label>图片密码</label><input type="number" class="input-field" v-model.number="pwdImg" min="1"></div>
+        <div><label>水印密码</label><input type="number" class="input-field" v-model.number="pwdWm" min="1"></div>
+      </div>
+
+      <button class="btn btn-primary btn-block" :disabled="!distFile || !names.trim() || loading" @click="doDistribute">
+        <span v-if="loading" class="spinner"></span>
+        <span v-else>📤</span>
+        <span v-if="loading">生成分发图片...</span>
+        <span v-else>生成分发图片（{{ nameList.length }} 人）</span>
+      </button>
+
+      <div v-if="distError" class="error-box fade-in" style="margin-top:16px;">❌ {{ distError }}</div>
+
+      <div v-if="distResult" class="result-box fade-in" style="margin-top:16px;">
+        <h3 style="font-weight:600;margin-bottom:14px;color:var(--success);">✅ 分发图片已生成！</h3>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
+          <span class="info-tag">👥 总数: <strong>{{ distResult.total }}</strong></span>
+          <span class="info-tag">✅ 成功: <strong>{{ distResult.success }}</strong></span>
+        </div>
+        <div class="tip-box" style="margin-bottom:14px;">
+          <p style="font-weight:600;">💡 使用方式：</p>
+          <p style="color:var(--text-muted);font-size:13px;">ZIP 里每张图片以人名命名 → 发给对应的人。泄漏后用「追踪泄漏」功能直接提取名字。</p>
+        </div>
+        <button class="btn btn-success btn-block" @click="downloadDist">💾 下载 ZIP</button>
+      </div>
+    </template>
+
+    <!-- ========== 泄漏追踪模式 ========== -->
+    <template v-if="tab==='track'">
+      <h2 class="section-title">🕵️ 追踪泄漏</h2>
+      <p style="color:var(--text-muted);font-size:14px;margin-bottom:20px;">
+        上传泄漏图片 → 自动提取水印中的名字
+      </p>
+
+      <div style="margin-bottom:20px;">
+        <label>泄漏的图片</label>
+        <div class="drop-zone" :class="{'has-file': trackFile}"
+             @click="$refs.trackInput.click()"
+             @dragover.prevent="$event.currentTarget.classList.add('dragover')"
+             @dragleave="$event.currentTarget.classList.remove('dragover')"
+             @drop.prevent="handleTrackDrop($event)">
+          <input type="file" ref="trackInput" accept="image/*" @change="handleTrackFile($event)" style="display:none">
+          <template v-if="!trackFile">
+            <div class="icon">🕵️</div>
+            <p style="font-weight:500;">上传泄漏的图片</p>
+          </template>
+          <template v-else>
+            <img :src="trackPreview" class="preview-img" alt="预览">
+            <p class="file-info">✅ {{ trackFile.name }}</p>
+          </template>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-bottom:24px;">
+        <div><label>图片密码</label><input type="number" class="input-field" v-model.number="pwdImg" min="1"></div>
+        <div><label>水印密码</label><input type="number" class="input-field" v-model.number="pwdWm" min="1"></div>
+      </div>
+
+      <button class="btn btn-primary btn-block" :disabled="!trackFile || loading" @click="doTrack">
+        <span v-if="loading" class="spinner"></span>
+        <span v-else>🕵️</span>
+        <span v-if="loading">追踪中...</span>
+        <span v-else>追踪泄漏者</span>
+      </button>
+
+      <div v-if="trackError" class="error-box fade-in" style="margin-top:16px;">❌ {{ trackError }}</div>
+
+      <div v-if="trackResult" class="result-box fade-in" style="margin-top:16px;">
+        <template v-if="trackResult.name">
+          <div style="background:linear-gradient(135deg,#dc2626,#ef4444);border-radius:12px;padding:24px;margin-bottom:16px;text-align:center;">
+            <p style="font-size:16px;color:#fecaca;margin-bottom:8px;">🎯 泄漏者</p>
+            <p style="font-size:32px;font-weight:700;color:white;">{{ trackResult.name }}</p>
+          </div>
+          <button class="btn btn-outline btn-block" @click="copyName">📋 复制名字</button>
+        </template>
+        <template v-else>
+          <div style="background:var(--bg-input);border-radius:12px;padding:24px;text-align:center;">
+            <p style="font-size:16px;color:var(--text-muted);">🤷 未检测到追踪水印</p>
+            <p style="font-size:13px;color:var(--text-muted);margin-top:8px;">请检查：① 密码是否正确 ② 图片是否经过分发追踪功能处理</p>
+          </div>
+        </template>
+      </div>
+    </template>
+  </div>
+
+  <!-- 说明 -->
+  <div class="card fade-in" style="margin-top:24px;">
+    <h3 style="font-size:18px;font-weight:600;margin-bottom:14px;">🎯 追踪分发原理</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;">
+      <div style="background:var(--bg-input);border-radius:10px;padding:16px;">
+        <p style="font-weight:600;">📤 1. 分发</p>
+        <p style="color:var(--text-muted);font-size:13px;">同一张图，每人嵌入不同名字水印</p>
+      </div>
+      <div style="background:var(--bg-input);border-radius:10px;padding:16px;">
+        <p style="font-weight:600;">📩 2. 发送</p>
+        <p style="color:var(--text-muted);font-size:13px;">把对应的图片发给对应的人</p>
+      </div>
+      <div style="background:var(--bg-input);border-radius:10px;padding:16px;">
+        <p style="font-weight:600;">🕵️ 3. 追踪</p>
+        <p style="color:var(--text-muted);font-size:13px;">上传泄漏图片 → 直接提取名字</p>
+      </div>
+    </div>
+    <div class="tip-box" style="margin-top:14px;">
+      <p style="font-weight:600;">⚠️ 密码必须一致</p>
+      <p style="color:var(--text-muted);font-size:13px;">分发和追踪时使用的图片密码、水印密码必须相同。建议固定使用默认值 1。</p>
+    </div>
+  </div>
+</div>
+
+<footer class="site-footer">基于 <a href="https://github.com/guofei9987/blind_watermark" target="_blank">blind_watermark</a> 开源项目</footer>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="js/api.js"></script>
+<script>
+const { createApp, ref, computed } = Vue;
+createApp({
+  setup() {
+    const tab = ref('distribute');
+    const pwdImg = ref(1), pwdWm = ref(1);
+    const loading = ref(false);
+
+    // === 分发 ===
+    const distFile = ref(null), distPreview = ref('');
+    const names = ref('');
+    const distError = ref(''), distResult = ref(null);
+    const nameList = computed(() => [...new Set(names.value.split(/[,，\n]/).map(n => n.trim()).filter(Boolean))]);
+
+    function handleDistFile(e) { const f = e.target.files[0]; if (f) { distFile.value = f; distPreview.value = URL.createObjectURL(f); distError.value = ''; distResult.value = null; } }
+    function handleDistDrop(e) { e.currentTarget.classList.remove('dragover'); const f = e.dataTransfer.files[0]; if (f && f.type.startsWith('image/')) { distFile.value = f; distPreview.value = URL.createObjectURL(f); distError.value = ''; distResult.value = null; } }
+
+    async function doDistribute() {
+      loading.value = true; distError.value = ''; distResult.value = null;
+      const fd = new FormData();
+      fd.append('image', distFile.value);
+      fd.append('names', names.value);
+      fd.append('password_img', pwdImg.value);
+      fd.append('password_wm', pwdWm.value);
+      try {
+        const { blob, headers } = await utils.fetchBlob('/api/distribute', fd);
+        distResult.value = {
+          url: URL.createObjectURL(blob),
+          total: parseInt(headers['x-total-count'] || '0'),
+          success: parseInt(headers['x-success-count'] || '0'),
+        };
+      } catch (e) { distError.value = e.message; }
+      finally { loading.value = false; }
+    }
+    function downloadDist() { utils.downloadBlob(distResult.value.url, 'distribute.zip'); }
+
+    // === 追踪 ===
+    const trackFile = ref(null), trackPreview = ref('');
+    const trackError = ref(''), trackResult = ref(null);
+
+    function handleTrackFile(e) { const f = e.target.files[0]; if (f) { trackFile.value = f; trackPreview.value = URL.createObjectURL(f); trackError.value = ''; trackResult.value = null; } }
+    function handleTrackDrop(e) { e.currentTarget.classList.remove('dragover'); const f = e.dataTransfer.files[0]; if (f && f.type.startsWith('image/')) { trackFile.value = f; trackPreview.value = URL.createObjectURL(f); trackError.value = ''; trackResult.value = null; } }
+
+    async function doTrack() {
+      loading.value = true; trackError.value = ''; trackResult.value = null;
+      const fd = new FormData();
+      fd.append('image', trackFile.value);
+      fd.append('password_img', pwdImg.value);
+      fd.append('password_wm', pwdWm.value);
+      try {
+        const data = await utils.fetchJSON('/api/track', fd);
+        trackResult.value = data;
+      } catch (e) { trackError.value = e.message; }
+      finally { loading.value = false; }
+    }
+    function copyName() { utils.copyText(trackResult.value.name); }
+
+    return {
+      tab, pwdImg, pwdWm, loading,
+      distFile, distPreview, names, nameList, distError, distResult,
+      handleDistFile, handleDistDrop, doDistribute, downloadDist,
+      trackFile, trackPreview, trackError, trackResult,
+      handleTrackFile, handleTrackDrop, doTrack, copyName,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

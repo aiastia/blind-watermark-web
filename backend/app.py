@@ -5,6 +5,7 @@ Blind Watermark Web & Telegram Bot - Backend Service
 """
 import os
 import io
+import json
 import uuid
 import logging
 from pathlib import Path
@@ -401,6 +402,166 @@ async def batch_embed_watermark(
     except Exception as e:
         logger.error(f"批量嵌入失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"批量嵌入失败: {str(e)}")
+
+
+# 固定水印长度（名字补齐到此长度，提取时无需知道名字）
+FIXED_WM_TEXT_LEN = 64
+PADDING_CHAR = "\x00"
+
+
+def _pad_name(name: str) -> str:
+    """将名字补齐到固定长度"""
+    return name.ljust(FIXED_WM_TEXT_LEN, PADDING_CHAR)[:FIXED_WM_TEXT_LEN]
+
+
+def _unpad_name(text: str) -> str:
+    """去除补齐字符"""
+    return text.rstrip(PADDING_CHAR).strip()
+
+
+def _get_fixed_wm_length(password_wm: int = 1) -> int:
+    """计算固定长度水印对应的比特长度"""
+    padded = _pad_name("x")
+    bwm = WaterMark(password_wm=password_wm)
+    bwm.read_wm(padded, mode="str")
+    return len(bwm.wm_bit)
+
+
+@app.post("/api/distribute")
+async def distribute_watermark(
+    image: UploadFile = File(..., description="原始图片"),
+    names: str = Form(..., description="接收者名字列表，逗号分隔"),
+    password_img: int = Form(1, description="图片密码"),
+    password_wm: int = Form(1, description="水印密码"),
+):
+    """
+    分发追踪模式：一张图片 + 多个名字 → 每人一份带唯一水印的图片，打包 ZIP
+    名字自动补齐到固定长度，追踪时无需知道名字即可提取
+    """
+    import zipfile
+    cleanup_old_files()
+
+    name_list = [n.strip() for n in names.split(",") if n.strip()]
+    if not name_list:
+        raise HTTPException(status_code=400, detail="请输入至少一个名字")
+    if len(name_list) > 100:
+        raise HTTPException(status_code=400, detail="单次最多 100 个名字")
+
+    image_bytes = await image.read()
+    if len(image_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片大小不能超过 20MB")
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片格式错误: {str(e)}")
+
+    task_id = uuid.uuid4().hex[:12]
+    ori_path = TEMP_DIR / f"dist_ori_{task_id}.png"
+    img.save(ori_path, "PNG")
+
+    zip_path = TEMP_DIR / f"distribute_{task_id}.zip"
+    results = []
+
+    try:
+        with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in name_list:
+                out_path = TEMP_DIR / f"dist_{task_id}_{name}.png"
+                try:
+                    # 补齐到固定长度
+                    padded_name = _pad_name(name)
+
+                    bwm = WaterMark(password_img=password_img, password_wm=password_wm)
+                    bwm.read_img(str(ori_path))
+                    bwm.read_wm(padded_name, mode="str")
+                    bwm.embed(str(out_path))
+
+                    safe_name = "".join(c for c in name if c.isalnum() or c in "_ -") or "unnamed"
+                    arcname = f"{safe_name}.png"
+                    zf.write(str(out_path), arcname)
+
+                    results.append({"name": name, "status": "success", "filename": arcname})
+                    logger.info(f"分发嵌入成功: {name}")
+                except Exception as e:
+                    results.append({"name": name, "status": "error", "error": str(e)})
+                    logger.error(f"分发嵌入失败: {name} - {str(e)}")
+                finally:
+                    out_path.unlink(missing_ok=True)
+
+        success_count = sum(1 for r in results if r["status"] == "success")
+        return FileResponse(
+            str(zip_path),
+            media_type="application/zip",
+            filename=f"distribute_{task_id}.zip",
+            headers={
+                "X-Task-ID": task_id,
+                "X-Total-Count": str(len(name_list)),
+                "X-Success-Count": str(success_count),
+                "X-Results": json.dumps(results, ensure_ascii=False),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"分发失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"分发失败: {str(e)}")
+    finally:
+        ori_path.unlink(missing_ok=True)
+
+
+@app.post("/api/track")
+async def track_leak(
+    image: UploadFile = File(..., description="泄漏的图片"),
+    password_img: int = Form(1, description="图片密码"),
+    password_wm: int = Form(1, description="水印密码"),
+):
+    """
+    泄漏追踪：上传图片 → 直接提取名字
+    所有分发图片的水印长度固定，无需知道名字即可提取
+    """
+    cleanup_old_files()
+
+    image_bytes = await image.read()
+    if len(image_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片大小不能超过 20MB")
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片格式错误: {str(e)}")
+
+    task_id = uuid.uuid4().hex[:12]
+    img_path = TEMP_DIR / f"track_{task_id}.png"
+
+    try:
+        img.save(img_path, "PNG")
+
+        # 用固定长度提取
+        wm_len = _get_fixed_wm_length(password_wm)
+        bwm = WaterMark(password_img=password_img, password_wm=password_wm)
+        extracted = bwm.extract(str(img_path), wm_shape=wm_len, mode="str")
+
+        # 去除补齐字符
+        name = _unpad_name(extracted)
+
+        logger.info(f"追踪提取: task={task_id}, raw='{extracted[:30]}...', name='{name}'")
+
+        return JSONResponse({
+            "success": True,
+            "name": name,
+            "raw_extracted": extracted,
+            "task_id": task_id,
+        })
+
+    except Exception as e:
+        logger.error(f"追踪失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"追踪失败: {str(e)}")
+    finally:
+        img_path.unlink(missing_ok=True)
 
 
 @app.get("/api/wm_length")
