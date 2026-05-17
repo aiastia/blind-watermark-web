@@ -107,13 +107,24 @@ jobs:
 
       - name: Clean old container images
         if: ${{ github.event.inputs.clean_old_images == 'true' || github.event_name == 'push' }}
-        uses: snok/container-retention-policy@v3.0.0
-        with:
-          image-names: web, bot
-          cut-off: 1 hour ago UTC
-          account-type: personal
-          token: ${{ secrets.GITHUB_TOKEN }}
-          keep-n-most-recent: 1
+        run: |
+          echo "🧹 清理旧版本镜像..."
+          PACKAGES=("web" "bot")
+          for pkg in "${PACKAGES[@]}"; do
+            echo "检查 $pkg ..."
+            versions=$(gh api -X GET "/user/packages/container/${{ github.repository }}%2F${pkg}/versions" --paginate -q '.[].id' 2>/dev/null || true)
+            count=0
+            for id in $versions; do
+              count=$((count + 1))
+              if [ $count -gt 1 ]; then
+                echo "删除旧版本: $id"
+                gh api -X DELETE "/user/packages/container/${{ github.repository }}%2F${pkg}/versions/$id" 2>/dev/null || echo "跳过 $id（权限不足或不存在）"
+              fi
+            done
+            echo "$pkg 当前保留: 最新 1 个版本"
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Summary
         run: |
