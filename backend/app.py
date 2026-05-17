@@ -523,6 +523,7 @@ async def distribute_watermark(
                 continue
         logger.info(f"使用档位: {actual_tier}")
 
+        name_map = {}  # 序号 → 名字映射
         with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
             for idx, name in enumerate(name_list):
                 out_path = TEMP_DIR / f"dist_{task_id}_{idx}.png"
@@ -535,17 +536,11 @@ async def distribute_watermark(
                     bwm.read_wm(padded_name, mode="str")
                     bwm.embed(str(out_path))
 
-                    # ZIP内文件名：用数字ID + 英文名（避免中文编码问题）
-                    safe_name = f"{idx+1}_{name}".replace(" ", "_")
-                    # 仅保留安全字符
-                    safe_name = "".join(c for c in safe_name if c.isalnum() or '\u4e00' <= c <= '\u9fff' or c in "_-") or f"unnamed_{idx}"
-                    arcname = f"{safe_name}.png"
-                    # 使用 ZipInfo 设置 UTF-8 标志，避免 latin-1 编码错误
-                    info = zipfile.ZipInfo(arcname)
-                    info.flag_bits |= 0x800  # UTF-8 flag
-                    info.compress_type = zipfile.ZIP_DEFLATED
-                    with open(str(out_path), "rb") as f:
-                        zf.writestr(info, f.read())
+                    # ZIP内用纯 ASCII 文件名（序号），避免编码问题
+                    num = idx + 1
+                    arcname = f"{num:03d}.png"
+                    zf.write(str(out_path), arcname)
+                    name_map[arcname] = name
 
                     results.append({"name": name, "status": "success", "filename": arcname})
                     logger.info(f"分发嵌入成功: {name}")
@@ -554,6 +549,12 @@ async def distribute_watermark(
                     logger.error(f"分发嵌入失败: {name} - {str(e)}")
                 finally:
                     out_path.unlink(missing_ok=True)
+
+            # 写入名字映射文件（纯 ASCII + UTF-8 内容）
+            map_lines = [f"{filename} -> {name}" for filename, name in name_map.items()]
+            map_content = "分发追踪 - 文件名映射\n" + "=" * 30 + "\n" + "\n".join(map_lines)
+            map_content += f"\n\n档位: {actual_tier}\n密码: img={password_img}, wm={password_wm}"
+            zf.writestr("README.txt", map_content.encode("utf-8"))
 
         success_count = sum(1 for r in results if r["status"] == "success")
         return FileResponse(
