@@ -14,6 +14,14 @@ on:
         options:
           - 'false'
           - 'true'
+      clean_old_images:
+        description: '是否清理旧版本镜像（只保留最新）？'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 env:
   REGISTRY: ghcr.io
@@ -52,7 +60,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract metadata (Web)
         id: meta-web
         uses: docker/metadata-action@v5
         with:
@@ -61,7 +69,6 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
 
       - name: Build & Push Web
         uses: docker/build-push-action@v6
@@ -84,7 +91,6 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
 
       - name: Build & Push Bot
         uses: docker/build-push-action@v6
@@ -97,6 +103,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
+
+      - name: Clean old container images
+        if: ${{ github.event.inputs.clean_old_images == 'true' || github.event_name == 'push' }}
+        uses: snok/container-retention-policy@v3.0.0
+        with:
+          image-names: web, bot
+          cut-off: 1 hour ago UTC
+          account-type: personal
+          token: ${{ secrets.GITHUB_TOKEN }}
+          keep-n-most-recent: 1
 
       - name: Summary
         run: |
