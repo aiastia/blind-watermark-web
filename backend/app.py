@@ -411,7 +411,7 @@ WM_LENGTH_TIERS = {
     "long": 256,    # 长文本：句子、URL、版权声明
 }
 DEFAULT_TIER = "medium"
-PADDING_CHAR = "\x00"
+PADDING_CHAR = " "  # 用空格补齐，\x00 会导致提取乱码
 
 
 def _pad_name(name: str, tier: str = DEFAULT_TIER) -> str:
@@ -477,8 +477,8 @@ async def distribute_watermark(
 
     try:
         with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
-            for name in name_list:
-                out_path = TEMP_DIR / f"dist_{task_id}_{name}.png"
+            for idx, name in enumerate(name_list):
+                out_path = TEMP_DIR / f"dist_{task_id}_{idx}.png"
                 try:
                     # 补齐到指定档位的固定长度
                     padded_name = _pad_name(name, tier)
@@ -488,7 +488,8 @@ async def distribute_watermark(
                     bwm.read_wm(padded_name, mode="str")
                     bwm.embed(str(out_path))
 
-                    safe_name = "".join(c for c in name if c.isalnum() or c in "_ -") or "unnamed"
+                    # ZIP内文件名用安全字符
+                    safe_name = "".join(c for c in name if c.isalnum() or '\u4e00' <= c <= '\u9fff' or c in "_ -") or "unnamed"
                     arcname = f"{safe_name}.png"
                     zf.write(str(out_path), arcname)
 
