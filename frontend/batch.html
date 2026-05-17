@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>批量嵌入 - 盲水印工具</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="css/style.css" rel="stylesheet">
+</head>
+<body>
+<header class="site-header">
+  <div style="max-width:800px;margin:0 auto;padding:0 20px;">
+    <h1>🔐 盲水印工具</h1>
+    <p>基于 DWT-DCT-SVD · 嵌入不可见水印 · 无需原图提取 · 支持批量</p>
+    <nav class="nav-bar">
+      <a href="index.html" class="nav-link">📝 嵌入水印</a>
+      <a href="batch.html" class="nav-link active">📦 批量嵌入</a>
+      <a href="extract.html" class="nav-link">🔍 提取水印</a>
+    </nav>
+  </div>
+</header>
+
+<div class="container">
+  <div class="card fade-in" id="app">
+    <h2 class="section-title">批量嵌入水印</h2>
+
+    <div style="margin-bottom:20px;">
+      <label>多张图片 <span class="badge badge-purple" v-if="files.length">{{ files.length }} 张</span></label>
+      <div class="drop-zone" :class="{'has-file': files.length}"
+           @click="$refs.input.click()"
+           @dragover.prevent="$event.currentTarget.classList.add('dragover')"
+           @dragleave="$event.currentTarget.classList.remove('dragover')"
+           @drop.prevent="handleMultiDrop($event)">
+        <input type="file" ref="input" accept="image/*" multiple @change="handleMultiFile($event)" style="display:none">
+        <template v-if="!files.length">
+          <div class="icon">📦</div>
+          <p style="font-weight:500;margin-bottom:4px;">点击或拖拽上传多张图片</p>
+          <p style="color:var(--text-muted);font-size:13px;">最多 50 张，每张最大 20MB</p>
+        </template>
+        <template v-else>
+          <div class="file-list">
+            <div class="file-item" v-for="(f, i) in files" :key="i">
+              <span>🖼️</span>
+              <span class="name">{{ f.name }}</span>
+              <span style="color:var(--text-muted);">{{ fmtSize(f.size) }}</span>
+              <button class="remove-btn" @click.stop="files.splice(i, 1)">✕</button>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div style="margin-bottom:20px;">
+      <label>统一水印文字</label>
+      <input type="text" class="input-field" v-model="text" placeholder="所有图片嵌入相同的水印文字..." maxlength="500">
+    </div>
+
+    <div class="grid-2" style="margin-bottom:24px;">
+      <div><label>图片密码</label><input type="number" class="input-field" v-model.number="pwdImg" min="1"></div>
+      <div><label>水印密码</label><input type="number" class="input-field" v-model.number="pwdWm" min="1"></div>
+    </div>
+
+    <button class="btn btn-primary btn-block" :disabled="!files.length || !text || loading" @click="doBatch">
+      <span v-if="loading" class="spinner"></span>
+      <span v-else>📦</span>
+      <span v-if="loading">批量处理中...</span>
+      <span v-else>批量嵌入（{{ files.length }} 张）</span>
+    </button>
+
+    <div v-if="error" class="error-box fade-in" style="margin-top:16px;">❌ {{ error }}</div>
+
+    <div v-if="result" class="result-box fade-in" style="margin-top:16px;">
+      <h3 style="font-weight:600;margin-bottom:14px;color:var(--success);">✅ 批量嵌入完成！</h3>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
+        <span class="info-tag">✅ 成功: <strong>{{ result.successCount }}</strong> 张</span>
+        <span class="info-tag">📏 水印长度: <strong>{{ result.wmLen }}</strong></span>
+        <span class="info-tag">🔑 密码: <strong>{{ pwdImg }}</strong></span>
+      </div>
+      <button class="btn btn-success btn-block" @click="download">💾 下载 ZIP 压缩包</button>
+    </div>
+  </div>
+</div>
+
+<footer class="site-footer">基于 <a href="https://github.com/guofei9987/blind_watermark" target="_blank">blind_watermark</a> 开源项目</footer>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="js/api.js"></script>
+<script>
+const { createApp, ref } = Vue;
+createApp({
+  setup() {
+    const files = ref([]), text = ref('');
+    const pwdImg = ref(1), pwdWm = ref(1);
+    const loading = ref(false), error = ref(''), result = ref(null);
+
+    function addFiles(list) {
+      files.value = [...files.value, ...Array.from(list)].slice(0, 50);
+      error.value = ''; result.value = null;
+    }
+    function handleMultiFile(e) { addFiles(e.target.files); }
+    function handleMultiDrop(e) {
+      e.currentTarget.classList.remove('dragover');
+      const list = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+      if (list.length) addFiles(list);
+    }
+    function fmtSize(b) { return utils.fmtSize(b); }
+
+    async function doBatch() {
+      loading.value = true; error.value = ''; result.value = null;
+      const fd = new FormData();
+      files.value.forEach(f => fd.append('images', f));
+      fd.append('watermark_text', text.value);
+      fd.append('password_img', pwdImg.value);
+      fd.append('password_wm', pwdWm.value);
+      try {
+        const { blob, headers } = await utils.fetchBlob('/api/batch_embed', fd);
+        result.value = {
+          url: URL.createObjectURL(blob),
+          wmLen: parseInt(headers['x-wm-length'] || '0'),
+          successCount: parseInt(headers['x-success-count'] || '0'),
+        };
+      } catch (e) { error.value = e.message; }
+      finally { loading.value = false; }
+    }
+    function download() { utils.downloadBlob(result.value.url, 'watermarked_batch.zip'); }
+
+    return { files, text, pwdImg, pwdWm, loading, error, result, handleMultiFile, handleMultiDrop, fmtSize, doBatch, download };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

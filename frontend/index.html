@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>嵌入水印 - 盲水印工具</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="css/style.css" rel="stylesheet">
+</head>
+<body>
+<header class="site-header">
+  <div style="max-width:800px;margin:0 auto;padding:0 20px;">
+    <h1>🔐 盲水印工具</h1>
+    <p>基于 DWT-DCT-SVD · 嵌入不可见水印 · 无需原图提取 · 支持批量</p>
+    <nav class="nav-bar">
+      <a href="index.html" class="nav-link active">📝 嵌入水印</a>
+      <a href="batch.html" class="nav-link">📦 批量嵌入</a>
+      <a href="extract.html" class="nav-link">🔍 提取水印</a>
+    </nav>
+  </div>
+</header>
+
+<div class="container">
+  <div class="card fade-in" id="app">
+    <h2 class="section-title">嵌入文字水印</h2>
+
+    <div style="margin-bottom:20px;">
+      <label>原始图片</label>
+      <div class="drop-zone" :class="{'has-file': file}"
+           @click="$refs.input.click()"
+           @dragover.prevent="$event.currentTarget.classList.add('dragover')"
+           @dragleave="$event.currentTarget.classList.remove('dragover')"
+           @drop.prevent="handleDrop($event)">
+        <input type="file" ref="input" accept="image/*" @change="handleFile($event)" style="display:none">
+        <template v-if="!file">
+          <div class="icon">📷</div>
+          <p style="font-weight:500;margin-bottom:4px;">点击或拖拽上传图片</p>
+          <p style="color:var(--text-muted);font-size:13px;">支持 JPG / PNG / WebP，最大 20MB</p>
+        </template>
+        <template v-else>
+          <img :src="preview" class="preview-img" alt="预览">
+          <p class="file-info">✅ {{ file.name }} ({{ fmtSize(file.size) }})</p>
+        </template>
+      </div>
+    </div>
+
+    <div style="margin-bottom:20px;">
+      <label>水印文字</label>
+      <input type="text" class="input-field" v-model="text" placeholder="输入要隐藏的文字信息..." maxlength="500">
+      <p class="hint">相同文字 + 相同密码 → 固定水印长度，提取时只需记住文字和密码</p>
+    </div>
+
+    <div class="grid-2" style="margin-bottom:24px;">
+      <div><label>图片密码</label><input type="number" class="input-field" v-model.number="pwdImg" min="1"></div>
+      <div><label>水印密码</label><input type="number" class="input-field" v-model.number="pwdWm" min="1"></div>
+    </div>
+
+    <button class="btn btn-primary btn-block" :disabled="!file || !text || loading" @click="doEmbed">
+      <span v-if="loading" class="spinner"></span>
+      <span v-else>🔐</span> 嵌入水印
+    </button>
+
+    <div v-if="error" class="error-box fade-in" style="margin-top:16px;">❌ {{ error }}</div>
+
+    <div v-if="result" class="result-box fade-in" style="margin-top:16px;">
+      <h3 style="font-weight:600;margin-bottom:14px;color:var(--success);">✅ 水印嵌入成功！</h3>
+      <div style="margin-bottom:14px;">
+        <img :src="result.url" class="preview-img" alt="结果" style="border:1px solid var(--border);">
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
+        <span class="info-tag">📏 水印长度: <strong>{{ result.wmLen }}</strong></span>
+        <span class="info-tag">🔑 密码: <strong>{{ pwdImg }}</strong></span>
+      </div>
+      <div class="tip-box" style="margin-bottom:14px;">
+        <p style="font-weight:600;margin-bottom:6px;">💡 提取水印时只需要：</p>
+        <p style="color:var(--text-muted);">① 带水印的图片 &nbsp; ② 水印文字（系统自动计算长度）&nbsp; ③ 密码</p>
+      </div>
+      <div style="display:flex;gap:10px;">
+        <button class="btn btn-success" style="flex:1;" @click="download">💾 下载图片</button>
+        <button class="btn btn-outline" style="flex:1;" @click="copyInfo">📋 复制提取信息</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card fade-in" style="margin-top:24px;">
+    <h3 style="font-size:18px;font-weight:600;margin-bottom:14px;">💡 什么是盲水印？</h3>
+    <p style="color:var(--text-muted);line-height:1.8;font-size:14px;">
+      盲水印基于 <strong>DWT-DCT-SVD</strong> 频域算法，水印嵌入图片频域系数中，肉眼完全不可见。
+      即使图片被旋转、裁剪、缩放、压缩，水印仍可提取。
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:14px;">
+      <div style="background:var(--bg-input);border-radius:10px;padding:14px;">
+        <p style="font-weight:600;font-size:14px;">👁️ 不可见</p>
+        <p style="color:var(--text-muted);font-size:12px;">肉眼无法察觉</p>
+      </div>
+      <div style="background:var(--bg-input);border-radius:10px;padding:14px;">
+        <p style="font-weight:600;font-size:14px;">🛡️ 抗攻击</p>
+        <p style="color:var(--text-muted);font-size:12px;">旋转裁剪压缩</p>
+      </div>
+      <div style="background:var(--bg-input);border-radius:10px;padding:14px;">
+        <p style="font-weight:600;font-size:14px;">🔑 无需原图</p>
+        <p style="color:var(--text-muted);font-size:12px;">盲提取</p>
+      </div>
+      <div style="background:var(--bg-input);border-radius:10px;padding:14px;">
+        <p style="font-weight:600;font-size:14px;">📏 长度固定</p>
+        <p style="color:var(--text-muted);font-size:12px;">同文字=同长度</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="site-footer">基于 <a href="https://github.com/guofei9987/blind_watermark" target="_blank">blind_watermark</a> 开源项目</footer>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="js/api.js"></script>
+<script>
+const { createApp, ref } = Vue;
+createApp({
+  setup() {
+    const file = ref(null), preview = ref(''), text = ref('');
+    const pwdImg = ref(1), pwdWm = ref(1);
+    const loading = ref(false), error = ref(''), result = ref(null);
+
+    function setFile(f) {
+      file.value = f;
+      preview.value = URL.createObjectURL(f);
+      error.value = ''; result.value = null;
+    }
+    function handleFile(e) { const f = e.target.files[0]; if (f) setFile(f); }
+    function handleDrop(e) {
+      e.currentTarget.classList.remove('dragover');
+      const f = e.dataTransfer.files[0];
+      if (f && f.type.startsWith('image/')) setFile(f);
+    }
+    function fmtSize(b) { return utils.fmtSize(b); }
+
+    async function doEmbed() {
+      loading.value = true; error.value = ''; result.value = null;
+      const fd = new FormData();
+      fd.append('image', file.value); fd.append('watermark_text', text.value);
+      fd.append('password_img', pwdImg.value); fd.append('password_wm', pwdWm.value);
+      try {
+        const { blob, headers } = await utils.fetchBlob('/api/embed', fd);
+        const url = URL.createObjectURL(blob);
+        result.value = { url, wmLen: parseInt(headers['x-wm-length'] || '0') };
+      } catch (e) { error.value = e.message; }
+      finally { loading.value = false; }
+    }
+    function download() { utils.downloadBlob(result.value.url, 'watermarked.png'); }
+    function copyInfo() { utils.copyText(`水印长度: ${result.value.wmLen}\n密码: ${pwdImg.value}`); }
+
+    return { file, preview, text, pwdImg, pwdWm, loading, error, result, handleFile, handleDrop, fmtSize, doEmbed, download, copyInfo };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

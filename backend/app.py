@@ -1,0 +1,439 @@
+
+"""
+Blind Watermark Web & Telegram Bot - Backend Service
+基于 DWT-DCT-SVD 的图片盲水印服务
+"""
+import os
+import io
+import uuid
+import logging
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+
+from blind_watermark import WaterMark
+
+# 日志配置
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 临时文件目录
+TEMP_DIR = Path("./temp")
+TEMP_DIR.mkdir(exist_ok=True)
+
+app = FastAPI(
+    title="Blind Watermark API",
+    description="图片盲水印 - 嵌入与提取服务",
+    version="1.0.0",
+)
+
+# 跨域支持
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def cleanup_old_files():
+    """清理超过 1 小时的临时文件"""
+    import time
+    now = time.time()
+    for f in TEMP_DIR.iterdir():
+        if f.is_file() and (now - f.stat().st_mtime) > 3600:
+            f.unlink(missing_ok=True)
+
+
+@app.post("/api/embed")
+async def embed_watermark(
+    image: UploadFile = File(..., description="原始图片"),
+    watermark_text: str = Form("", description="水印文字"),
+    password_img: int = Form(1, description="图片密码"),
+    password_wm: int = Form(1, description="水印密码"),
+):
+    """
+    嵌入文字盲水印到图片中
+    """
+    cleanup_old_files()
+
+    if not watermark_text:
+        raise HTTPException(status_code=400, detail="水印文字不能为空")
+
+    # 读取图片
+    image_bytes = await image.read()
+    if len(image_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片大小不能超过 20MB")
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片格式错误: {str(e)}")
+
+    # 保存原图到临时文件
+    task_id = uuid.uuid4().hex[:12]
+    ori_path = TEMP_DIR / f"ori_{task_id}.png"
+    out_path = TEMP_DIR / f"embed_{task_id}.png"
+
+    try:
+        img.save(ori_path, "PNG")
+
+        # 嵌入水印
+        bwm = WaterMark(password_img=password_img, password_wm=password_wm)
+        bwm.read_img(str(ori_path))
+        bwm.read_wm(watermark_text, mode="str")
+        bwm.embed(str(out_path))
+
+        wm_len = len(bwm.wm_bit)
+
+        logger.info(
+            f"嵌入成功: task={task_id}, wm_len={wm_len}, "
+            f"text='{watermark_text[:20]}...'"
+        )
+
+        return FileResponse(
+            str(out_path),
+            media_type="image/png",
+            filename=f"watermarked_{task_id}.png",
+            headers={
+                "X-WM-Length": str(wm_len),
+                "X-Task-ID": task_id,
+            },
+        )
+
+    except Exception as e:
+        logger.error(f"嵌入失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"嵌入水印失败: {str(e)}")
+    finally:
+        ori_path.unlink(missing_ok=True)
+
+
+@app.post("/api/extract")
+async def extract_watermark(
+    image: UploadFile = File(..., description="带水印的图片"),
+    wm_length: int = Form(..., description="水印比特长度"),
+    password_img: int = Form(1, description="图片密码"),
+    password_wm: int = Form(1, description="水印密码"),
+):
+    """
+    从图片中提取文字盲水印
+    """
+    cleanup_old_files()
+
+    if wm_length <= 0:
+        raise HTTPException(status_code=400, detail="水印长度必须大于 0")
+
+    image_bytes = await image.read()
+    if len(image_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片大小不能超过 20MB")
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片格式错误: {str(e)}")
+
+    task_id = uuid.uuid4().hex[:12]
+    img_path = TEMP_DIR / f"extract_input_{task_id}.png"
+
+    try:
+        img.save(img_path, "PNG")
+
+        # 提取水印
+        bwm = WaterMark(password_img=password_img, password_wm=password_wm)
+        wm_extract = bwm.extract(str(img_path), wm_shape=wm_length, mode="str")
+
+        logger.info(
+            f"提取成功: task={task_id}, result='{wm_extract[:50]}...'"
+        )
+
+        return JSONResponse({
+            "success": True,
+            "watermark": wm_extract,
+            "task_id": task_id,
+        })
+
+    except Exception as e:
+        logger.error(f"提取失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"提取水印失败: {str(e)}")
+    finally:
+        img_path.unlink(missing_ok=True)
+
+
+@app.post("/api/embed_image")
+async def embed_image_watermark(
+    image: UploadFile = File(..., description="原始图片"),
+    watermark_image: UploadFile = File(..., description="水印图片"),
+    password_img: int = Form(1, description="图片密码"),
+    password_wm: int = Form(1, description="水印密码"),
+):
+    """
+    嵌入图片盲水印到图片中
+    """
+    cleanup_old_files()
+
+    image_bytes = await image.read()
+    wm_image_bytes = await watermark_image.read()
+
+    if len(image_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片大小不能超过 20MB")
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        wm_img = Image.open(io.BytesIO(wm_image_bytes))
+        if wm_img.mode != "RGB":
+            wm_img = wm_img.convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片格式错误: {str(e)}")
+
+    task_id = uuid.uuid4().hex[:12]
+    ori_path = TEMP_DIR / f"ori_{task_id}.png"
+    wm_path = TEMP_DIR / f"wm_{task_id}.png"
+    out_path = TEMP_DIR / f"embed_{task_id}.png"
+
+    try:
+        img.save(ori_path, "PNG")
+        wm_img.save(wm_path, "PNG")
+
+        bwm = WaterMark(password_img=password_img, password_wm=password_wm)
+        bwm.read_img(str(ori_path))
+        bwm.read_wm(str(wm_path))
+        bwm.embed(str(out_path))
+
+        wm_shape = f"{wm_img.height},{wm_img.width}"
+
+        return FileResponse(
+            str(out_path),
+            media_type="image/png",
+            filename=f"watermarked_{task_id}.png",
+            headers={
+                "X-WM-Shape": wm_shape,
+                "X-Task-ID": task_id,
+            },
+        )
+
+    except Exception as e:
+        logger.error(f"图片水印嵌入失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"嵌入水印失败: {str(e)}")
+    finally:
+        ori_path.unlink(missing_ok=True)
+        wm_path.unlink(missing_ok=True)
+
+
+@app.post("/api/extract_image")
+async def extract_image_watermark(
+    image: UploadFile = File(..., description="带水印的图片"),
+    wm_height: int = Form(..., description="水印图片高度"),
+    wm_width: int = Form(..., description="水印图片宽度"),
+    password_img: int = Form(1, description="图片密码"),
+    password_wm: int = Form(1, description="水印密码"),
+):
+    """
+    从图片中提取图片盲水印
+    """
+    cleanup_old_files()
+
+    image_bytes = await image.read()
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片格式错误: {str(e)}")
+
+    task_id = uuid.uuid4().hex[:12]
+    img_path = TEMP_DIR / f"extract_input_{task_id}.png"
+    out_wm_path = TEMP_DIR / f"extracted_wm_{task_id}.png"
+
+    try:
+        img.save(img_path, "PNG")
+
+        bwm = WaterMark(password_img=password_img, password_wm=password_wm)
+        bwm.extract(
+            filename=str(img_path),
+            wm_shape=(wm_height, wm_width),
+            out_wm_name=str(out_wm_path),
+        )
+
+        if not out_wm_path.exists():
+            raise Exception("提取的水印图片未生成")
+
+        return FileResponse(
+            str(out_wm_path),
+            media_type="image/png",
+            filename=f"extracted_watermark_{task_id}.png",
+        )
+
+    except Exception as e:
+        logger.error(f"图片水印提取失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"提取水印失败: {str(e)}")
+    finally:
+        img_path.unlink(missing_ok=True)
+
+
+@app.post("/api/batch_embed")
+async def batch_embed_watermark(
+    images: list[UploadFile] = File(..., description="多张原始图片"),
+    watermark_text: str = Form("", description="水印文字"),
+    password_img: int = Form(1, description="图片密码"),
+    password_wm: int = Form(1, description="水印密码"),
+):
+    """
+    批量嵌入文字盲水印到多张图片
+    返回 JSON 包含每张图片的下载链接和水印长度
+    """
+    import zipfile
+    cleanup_old_files()
+
+    if not watermark_text:
+        raise HTTPException(status_code=400, detail="水印文字不能为空")
+
+    if len(images) > 50:
+        raise HTTPException(status_code=400, detail="单次最多处理 50 张图片")
+
+    task_id = uuid.uuid4().hex[:12]
+    results = []
+    zip_files = []
+
+    try:
+        # 先计算水印长度（用第一张图片）
+        first_bytes = await images[0].read()
+        if len(first_bytes) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="图片大小不能超过 20MB")
+
+        try:
+            first_img = Image.open(io.BytesIO(first_bytes))
+            if first_img.mode != "RGB":
+                first_img = first_img.convert("RGB")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"图片格式错误: {str(e)}")
+
+        # 用临时图片计算 wm_bit 长度
+        tmp_path = TEMP_DIR / f"tmp_{task_id}.png"
+        first_img.save(tmp_path, "PNG")
+        bwm_test = WaterMark(password_img=password_img, password_wm=password_wm)
+        bwm_test.read_img(str(tmp_path))
+        bwm_test.read_wm(watermark_text, mode="str")
+        wm_len = len(bwm_test.wm_bit)
+        tmp_path.unlink(missing_ok=True)
+
+        # 重新读取第一张图片（因为已经 read 过了）
+        await images[0].seek(0)
+
+        # 处理每张图片
+        for idx, img_file in enumerate(images):
+            image_bytes = await img_file.read()
+            if len(image_bytes) > 20 * 1024 * 1024:
+                results.append({
+                    "index": idx,
+                    "filename": img_file.filename,
+                    "error": "图片大小超过 20MB",
+                })
+                continue
+
+            try:
+                img = Image.open(io.BytesIO(image_bytes))
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+
+                ori_path = TEMP_DIR / f"batch_ori_{task_id}_{idx}.png"
+                out_path = TEMP_DIR / f"batch_embed_{task_id}_{idx}.png"
+
+                img.save(ori_path, "PNG")
+
+                bwm = WaterMark(password_img=password_img, password_wm=password_wm)
+                bwm.read_img(str(ori_path))
+                bwm.read_wm(watermark_text, mode="str")
+                bwm.embed(str(out_path))
+
+                zip_files.append((out_path, f"watermarked_{img_file.filename}"))
+                results.append({
+                    "index": idx,
+                    "filename": img_file.filename,
+                    "status": "success",
+                })
+
+                ori_path.unlink(missing_ok=True)
+
+            except Exception as e:
+                results.append({
+                    "index": idx,
+                    "filename": img_file.filename,
+                    "error": str(e),
+                })
+
+        # 打包为 ZIP
+        zip_path = TEMP_DIR / f"batch_{task_id}.zip"
+        with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
+            for file_path, arcname in zip_files:
+                zf.write(str(file_path), arcname)
+                file_path.unlink(missing_ok=True)
+
+        return FileResponse(
+            str(zip_path),
+            media_type="application/zip",
+            filename=f"watermarked_batch_{task_id}.zip",
+            headers={
+                "X-WM-Length": str(wm_len),
+                "X-Total-Count": str(len(results)),
+                "X-Success-Count": str(
+                    sum(1 for r in results if r.get("status") == "success")
+                ),
+                "X-Task-ID": task_id,
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量嵌入失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"批量嵌入失败: {str(e)}")
+
+
+@app.get("/api/wm_length")
+async def get_wm_length(
+    text: str,
+    password_wm: int = 1,
+):
+    """
+    根据文字计算水印比特长度（无需图片）
+    相同文字 + 相同密码 → 长度固定
+    """
+    try:
+        bwm = WaterMark(password_wm=password_wm)
+        bwm.read_wm(text, mode="str")
+        wm_len = len(bwm.wm_bit)
+        return {"wm_length": wm_len, "text_preview": text[:20]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"计算失败: {str(e)}")
+
+
+@app.get("/api/health")
+async def health_check():
+    """健康检查"""
+    return {"status": "ok", "service": "blind-watermark"}
+
+
+# 挂载静态文件（前端页面）
+# 支持环境变量 STATIC_DIR 指定路径（Docker 用），默认指向本地 frontend 目录
+_static_path = os.environ.get("STATIC_DIR", "")
+if _static_path:
+    static_dir = Path(_static_path)
+else:
+    static_dir = Path(__file__).parent.parent / "frontend"
+
+if static_dir.exists():
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
