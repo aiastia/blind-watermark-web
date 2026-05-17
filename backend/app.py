@@ -565,7 +565,7 @@ async def distribute_watermark(
                 "X-Task-ID": task_id,
                 "X-Total-Count": str(len(name_list)),
                 "X-Success-Count": str(success_count),
-                "X-Results": json.dumps(results, ensure_ascii=False),
+                "X-Results": json.dumps(results, ensure_ascii=True),
             },
         )
     except HTTPException:
