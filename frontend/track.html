@@ -63,6 +63,16 @@
         <p class="hint">💡 名字会自动补齐到固定长度，追踪时无需知道名字即可提取</p>
       </div>
 
+      <div style="margin-bottom:20px;">
+        <label>水印长度档位</label>
+        <div class="nav-bar" style="margin:0;">
+          <button v-for="t in tiers" :key="t.key" class="nav-link" :class="{active: tier===t.key}" @click="tier=t.key" style="cursor:pointer;font-size:12px;">
+            {{ t.icon }} {{ t.label }}<br><span style="font-size:11px;color:var(--text-muted);">≤{{ t.max }}字</span>
+          </button>
+        </div>
+        <p class="hint">💡 名字会自动补齐到固定长度，选择能容纳最长名字的档位</p>
+      </div>
+
       <div class="grid-2" style="margin-bottom:24px;">
         <div><label>图片密码</label><input type="number" class="input-field" v-model.number="pwdImg" min="1"></div>
         <div><label>水印密码</label><input type="number" class="input-field" v-model.number="pwdWm" min="1"></div>
@@ -184,6 +194,12 @@ createApp({
     const tab = ref('distribute');
     const pwdImg = ref(1), pwdWm = ref(1);
     const loading = ref(false);
+    const tier = ref('medium');
+    const tiers = [
+      { key: 'short', icon: '🔹', label: '短名', max: 32 },
+      { key: 'medium', icon: '🔷', label: '中等', max: 128 },
+      { key: 'long', icon: '💠', label: '长文本', max: 256 },
+    ];
 
     // === 分发 ===
     const distFile = ref(null), distPreview = ref('');
@@ -199,6 +215,7 @@ createApp({
       const fd = new FormData();
       fd.append('image', distFile.value);
       fd.append('names', names.value);
+      fd.append('tier', tier.value);
       fd.append('password_img', pwdImg.value);
       fd.append('password_wm', pwdWm.value);
       try {
@@ -224,6 +241,7 @@ createApp({
       loading.value = true; trackError.value = ''; trackResult.value = null;
       const fd = new FormData();
       fd.append('image', trackFile.value);
+      fd.append('tier', 'auto');  // 自动遍历所有档位
       fd.append('password_img', pwdImg.value);
       fd.append('password_wm', pwdWm.value);
       try {
@@ -235,7 +253,7 @@ createApp({
     function copyName() { utils.copyText(trackResult.value.name); }
 
     return {
-      tab, pwdImg, pwdWm, loading,
+      tab, pwdImg, pwdWm, loading, tier, tiers,
       distFile, distPreview, names, nameList, distError, distResult,
       handleDistFile, handleDistDrop, doDistribute, downloadDist,
       trackFile, trackPreview, trackError, trackResult,

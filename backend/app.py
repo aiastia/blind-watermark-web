@@ -404,14 +404,22 @@ async def batch_embed_watermark(
         raise HTTPException(status_code=500, detail=f"批量嵌入失败: {str(e)}")
 
 
-# 固定水印长度（名字补齐到此长度，提取时无需知道名字）
-FIXED_WM_TEXT_LEN = 64
+# 水印长度档位（名字补齐到此长度，提取时无需知道名字）
+WM_LENGTH_TIERS = {
+    "short": 32,    # 短名：张三、李四
+    "medium": 128,  # 中等：邮箱、用户ID、短句
+    "long": 256,    # 长文本：句子、URL、版权声明
+}
+DEFAULT_TIER = "medium"
 PADDING_CHAR = "\x00"
 
 
-def _pad_name(name: str) -> str:
-    """将名字补齐到固定长度"""
-    return name.ljust(FIXED_WM_TEXT_LEN, PADDING_CHAR)[:FIXED_WM_TEXT_LEN]
+def _pad_name(name: str, tier: str = DEFAULT_TIER) -> str:
+    """将名字补齐到指定档位的固定长度"""
+    max_len = WM_LENGTH_TIERS.get(tier, WM_LENGTH_TIERS[DEFAULT_TIER])
+    if len(name) > max_len:
+        raise ValueError(f"文字长度({len(name)})超过档位上限({max_len})，请选择更高的档位")
+    return name.ljust(max_len, PADDING_CHAR)[:max_len]
 
 
 def _unpad_name(text: str) -> str:
@@ -419,9 +427,10 @@ def _unpad_name(text: str) -> str:
     return text.rstrip(PADDING_CHAR).strip()
 
 
-def _get_fixed_wm_length(password_wm: int = 1) -> int:
-    """计算固定长度水印对应的比特长度"""
-    padded = _pad_name("x")
+def _get_fixed_wm_length(tier: str = DEFAULT_TIER, password_wm: int = 1) -> int:
+    """计算指定档位对应的比特长度"""
+    max_len = WM_LENGTH_TIERS.get(tier, WM_LENGTH_TIERS[DEFAULT_TIER])
+    padded = "x".ljust(max_len, PADDING_CHAR)[:max_len]
     bwm = WaterMark(password_wm=password_wm)
     bwm.read_wm(padded, mode="str")
     return len(bwm.wm_bit)
@@ -431,6 +440,7 @@ def _get_fixed_wm_length(password_wm: int = 1) -> int:
 async def distribute_watermark(
     image: UploadFile = File(..., description="原始图片"),
     names: str = Form(..., description="接收者名字列表，逗号分隔"),
+    tier: str = Form("medium", description="长度档位: short(32)/medium(128)/long(256)"),
     password_img: int = Form(1, description="图片密码"),
     password_wm: int = Form(1, description="水印密码"),
 ):
@@ -470,8 +480,8 @@ async def distribute_watermark(
             for name in name_list:
                 out_path = TEMP_DIR / f"dist_{task_id}_{name}.png"
                 try:
-                    # 补齐到固定长度
-                    padded_name = _pad_name(name)
+                    # 补齐到指定档位的固定长度
+                    padded_name = _pad_name(name, tier)
 
                     bwm = WaterMark(password_img=password_img, password_wm=password_wm)
                     bwm.read_img(str(ori_path))
@@ -514,12 +524,13 @@ async def distribute_watermark(
 @app.post("/api/track")
 async def track_leak(
     image: UploadFile = File(..., description="泄漏的图片"),
+    tier: str = Form("medium", description="长度档位: short/medium/long，不记得可填 auto 自动遍历"),
     password_img: int = Form(1, description="图片密码"),
     password_wm: int = Form(1, description="水印密码"),
 ):
     """
     泄漏追踪：上传图片 → 直接提取名字
-    所有分发图片的水印长度固定，无需知道名字即可提取
+    支持指定档位或 auto 自动遍历所有档位
     """
     cleanup_old_files()
 
@@ -540,20 +551,46 @@ async def track_leak(
     try:
         img.save(img_path, "PNG")
 
-        # 用固定长度提取
-        wm_len = _get_fixed_wm_length(password_wm)
-        bwm = WaterMark(password_img=password_img, password_wm=password_wm)
-        extracted = bwm.extract(str(img_path), wm_shape=wm_len, mode="str")
+        # 确定要尝试的档位
+        if tier == "auto":
+            tiers_to_try = list(WM_LENGTH_TIERS.keys())
+        else:
+            tiers_to_try = [tier]
 
-        # 去除补齐字符
-        name = _unpad_name(extracted)
+        results = []
+        best_name = ""
+        best_tier = ""
 
-        logger.info(f"追踪提取: task={task_id}, raw='{extracted[:30]}...', name='{name}'")
+        for t in tiers_to_try:
+            try:
+                wm_len = _get_fixed_wm_length(t, password_wm)
+                bwm = WaterMark(password_img=password_img, password_wm=password_wm)
+                extracted = bwm.extract(str(img_path), wm_shape=wm_len, mode="str")
+                name = _unpad_name(extracted)
+
+                # 判断是否有有效内容（非空且不是纯乱码）
+                has_content = bool(name and any(c.isalnum() or '\u4e00' <= c <= '\u9fff' for c in name))
+
+                results.append({
+                    "tier": t,
+                    "max_length": WM_LENGTH_TIERS[t],
+                    "name": name,
+                    "valid": has_content,
+                })
+
+                if has_content and not best_name:
+                    best_name = name
+                    best_tier = t
+
+                logger.info(f"追踪: tier={t}, name='{name}', valid={has_content}")
+            except Exception as e:
+                results.append({"tier": t, "name": "", "valid": False, "error": str(e)})
 
         return JSONResponse({
             "success": True,
-            "name": name,
-            "raw_extracted": extracted,
+            "name": best_name,
+            "tier": best_tier,
+            "results": results,
             "task_id": task_id,
         })
 
