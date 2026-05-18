@@ -482,13 +482,20 @@ def _unpad_name(text: str) -> str:
     """去除前缀和补齐字符，解码回名字"""
     if not text or len(text) < 2:
         return ""
+    # 必须以 'x' 前缀开头
+    if text[0] != PREFIX:
+        return ""
     hex_str = text[1:].rstrip(PAD_CHAR).strip()  # 去掉前缀 'x' 和尾部 '0'
     if not hex_str:
         return ""
     try:
-        return bytes.fromhex(hex_str).decode("utf-8")
+        decoded = bytes.fromhex(hex_str).decode("utf-8")
+        # 验证解码结果包含可读字符（中文/字母/数字/常见标点）
+        if decoded and any(c.isalnum() or '\u4e00' <= c <= '\u9fff' or c in '_-.@ ' for c in decoded):
+            return decoded
+        return ""
     except Exception:
-        return text  # 解码失败返回原文
+        return ""  # 解码失败返回空
 
 
 def _get_fixed_wm_length(tier: str = DEFAULT_TIER, password_wm: int = 1) -> int:
