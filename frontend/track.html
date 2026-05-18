@@ -73,9 +73,20 @@
         <p class="hint">💡 名字会自动补齐到固定长度，选择能容纳最长名字的档位</p>
       </div>
 
-      <div class="grid-2" style="margin-bottom:24px;">
+      <div class="grid-2" style="margin-bottom:20px;">
         <div><label>图片密码</label><input type="number" class="input-field" v-model.number="pwdImg" min="1"></div>
         <div><label>水印密码</label><input type="number" class="input-field" v-model.number="pwdWm" min="1"></div>
+      </div>
+
+      <div style="margin-bottom:24px;padding:14px;background:var(--bg-input);border-radius:10px;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:4px;">
+          <input type="checkbox" v-model="lightWm" style="width:18px;height:18px;accent-color:var(--primary);">
+          <span style="font-weight:500;">💡 超淡水印（截图追踪）</span>
+          <span class="badge" style="background:var(--warning);color:#fff;font-size:10px;">可选</span>
+        </label>
+        <p style="color:var(--text-muted);font-size:12px;margin:0;">
+          每张图额外添加超淡可见标记，截图后可通过增强算法提取。默认关闭。
+        </p>
       </div>
 
       <button class="btn btn-primary btn-block" :disabled="!distFile || !names.trim() || loading" @click="doDistribute">
@@ -154,6 +165,15 @@
             <p style="font-size:16px;color:var(--text-muted);">🤷 未检测到追踪水印</p>
             <p style="font-size:13px;color:var(--text-muted);margin-top:8px;">请检查：① 密码是否正确 ② 图片是否经过分发追踪功能处理</p>
           </div>
+          <button class="btn btn-outline btn-block" style="margin-top:12px;" :disabled="enhanceLoading" @click="doEnhance">
+            <span v-if="enhanceLoading" class="spinner"></span>
+            <span v-else>🔬</span>
+            尝试增强提取超淡水印
+          </button>
+          <div v-if="enhanceResult" style="margin-top:12px;">
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:8px;">增强后的图片（查看右下角是否有文字）：</p>
+            <img :src="enhanceResult" class="preview-img" alt="增强结果" style="border:1px solid var(--border);">
+          </div>
         </template>
       </div>
     </template>
@@ -195,6 +215,9 @@ createApp({
     const tab = ref('distribute');
     const pwdImg = ref(1), pwdWm = ref(1);
     const loading = ref(false);
+    const lightWm = ref(false);
+    const enhanceLoading = ref(false);
+    const enhanceResult = ref(null);
     const tier = ref('s');
     const tiers = [
       { key: 's', icon: '🔷', label: 'S', desc: '≤5中文 / 15数字' },
@@ -219,6 +242,7 @@ createApp({
       fd.append('tier', tier.value);
       fd.append('password_img', pwdImg.value);
       fd.append('password_wm', pwdWm.value);
+      fd.append('light_watermark', lightWm.value);
       try {
         const { blob, headers } = await utils.fetchBlob('/api/distribute', fd);
         distResult.value = {
@@ -253,12 +277,24 @@ createApp({
     }
     function copyName() { utils.copyText(trackResult.value.name); }
 
+    async function doEnhance() {
+      enhanceLoading.value = true; enhanceResult.value = null;
+      const fd = new FormData();
+      fd.append('image', trackFile.value);
+      try {
+        const { blob } = await utils.fetchBlob('/api/enhance_light', fd);
+        enhanceResult.value = URL.createObjectURL(blob);
+      } catch (e) { trackError.value = e.message; }
+      finally { enhanceLoading.value = false; }
+    }
+
     return {
-      tab, pwdImg, pwdWm, loading, tier, tiers,
+      tab, pwdImg, pwdWm, loading, tier, tiers, lightWm,
       distFile, distPreview, names, nameList, distError, distResult,
       handleDistFile, handleDistDrop, doDistribute, downloadDist,
       trackFile, trackPreview, trackError, trackResult,
       handleTrackFile, handleTrackDrop, doTrack, copyName,
+      enhanceLoading, enhanceResult, doEnhance,
     };
   }
 }).mount('#app');

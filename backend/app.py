@@ -19,6 +19,9 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from blind_watermark import WaterMark
 
+# 超淡水印（可见水印）用的字体和绘图
+from PIL import ImageDraw, ImageFont
+
 # 日志配置
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,11 +62,13 @@ async def embed_watermark(
     password_img: int = Form(1, description="图片密码"),
     password_wm: int = Form(1, description="水印密码"),
     tier: str = Form("", description="长度档位: short/medium/long，留空则用原始长度"),
+    light_watermark: bool = Form(False, description="是否添加超淡水印（截图可追踪）"),
 ):
     """
     嵌入文字盲水印到图片中。
     - tier 为空时：使用原始文字长度（提取时需提供 wm_length）
     - tier 指定时：自动编码补齐到固定长度（提取时无需 wm_length）
+    - light_watermark=True 时：额外添加超淡可见标记（截图后可增强提取）
     """
     cleanup_old_files()
 
@@ -86,6 +91,10 @@ async def embed_watermark(
     out_path = TEMP_DIR / f"embed_{task_id}.png"
 
     try:
+        # 超淡水印：在盲水印嵌入前添加可见标记
+        if light_watermark:
+            img = _add_light_watermark(img, watermark_text)
+
         img.save(ori_path, "PNG")
 
         use_fixed = bool(tier and tier in WM_LENGTH_TIERS)
@@ -508,6 +517,74 @@ def _get_fixed_wm_length(tier: str = DEFAULT_TIER, password_wm: int = 1) -> int:
     return len(bwm.wm_bit)
 
 
+def _add_light_watermark(img: Image.Image, text: str, opacity: int = 8) -> Image.Image:
+    """
+    添加超淡水印（肉眼几乎看不到的可见文字标记）
+    opacity: 透明度 0-255，默认 8 (约3%)，截图后仍可通过算法增强提取
+    """
+    img = img.copy()
+    draw = ImageDraw.Draw(img)
+    
+    # 计算字体大小：基于图片尺寸
+    w, h = img.size
+    font_size = max(16, min(w, h) // 20)
+    
+    # 尝试加载字体
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/PingFang.ttc", font_size)
+    except Exception:
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/noto/NotoSansCJK.ttc", font_size)
+        except Exception:
+            font = ImageFont.load_default()
+    
+    # 在右下角绘制文字（半透明白色）
+    text_bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = text_bbox[2] - text_bbox[0]
+    text_h = text_bbox[3] - text_bbox[1]
+    
+    # 位置：右下角，留一点边距
+    margin = max(10, font_size // 2)
+    x = w - text_w - margin
+    y = h - text_h - margin
+    
+    # 绘制半透明文字（白色，低透明度）
+    # 用 composite 实现真正的半透明
+    text_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    text_draw = ImageDraw.Draw(text_layer)
+    text_draw.text((x, y), text, fill=(255, 255, 255, opacity), font=font)
+    
+    img_rgba = img.convert("RGBA")
+    img_rgba = Image.alpha_composite(img_rgba, text_layer)
+    return img_rgba.convert("RGB")
+
+
+def _enhance_light_watermark(img: Image.Image) -> Image.Image:
+    """
+    增强提取超淡水印：放大亮度差异，让不可见的文字变得可见
+    """
+    import cv2
+    # 转为 numpy
+    arr = np.array(img)
+    
+    # 对每个通道做对比度增强
+    # 算法：检测每个像素与周围像素的微小亮度差，放大这个差
+    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    
+    # 用高斯模糊得到背景
+    blur = cv2.GaussianBlur(gray, (0, 0), sigmaX=3)
+    # 差值 = 原图 - 背景
+    diff = gray - blur
+    
+    # 放大差值
+    diff = diff * 30  # 放大系数
+    
+    # 归一化到 0-255
+    diff = np.clip(diff + 128, 0, 255).astype(np.uint8)
+    
+    return Image.fromarray(diff)
+
+
 def _ensure_min_size(img: Image.Image, min_dim: int = 300) -> Image.Image:
     """确保图片足够大以嵌入水印（太小则放大）"""
     w, h = img.size
@@ -526,10 +603,12 @@ async def distribute_watermark(
     tier: str = Form("medium", description="长度档位: short(32)/medium(128)/long(256)"),
     password_img: int = Form(1, description="图片密码"),
     password_wm: int = Form(1, description="水印密码"),
+    light_watermark: bool = Form(False, description="是否添加超淡水印（截图可追踪）"),
 ):
     """
     分发追踪模式：一张图片 + 多个名字 → 每人一份带唯一水印的图片，打包 ZIP
     名字自动补齐到固定长度，追踪时无需知道名字即可提取
+    light_watermark=True 时：每张图额外加超淡可见标记（截图后可增强提取）
     """
     import zipfile
     cleanup_old_files()
@@ -558,6 +637,9 @@ async def distribute_watermark(
     ori_path = TEMP_DIR / f"dist_ori_{task_id}.png"
     img.save(ori_path, "PNG")
 
+    # 保存原始图片的引用（不含超淡水印），用于盲水印
+    base_img = img
+
     zip_path = TEMP_DIR / f"distribute_{task_id}.zip"
     results = []
 
@@ -582,12 +664,21 @@ async def distribute_watermark(
         with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
             for idx, name in enumerate(name_list):
                 out_path = TEMP_DIR / f"dist_{task_id}_{idx}.png"
+                person_ori_path = TEMP_DIR / f"dist_person_{task_id}_{idx}.png"
                 try:
                     # 补齐到指定档位的固定长度
                     padded_name = _pad_name(name, actual_tier)
 
+                    # 超淡水印：每人单独添加自己的名字标记
+                    if light_watermark:
+                        person_img = _add_light_watermark(base_img.copy(), name)
+                        person_img.save(person_ori_path, "PNG")
+                        read_path = str(person_ori_path)
+                    else:
+                        read_path = str(ori_path)
+
                     bwm = WaterMark(password_img=password_img, password_wm=password_wm)
-                    bwm.read_img(str(ori_path))
+                    bwm.read_img(read_path)
                     bwm.read_wm(padded_name, mode="str")
                     bwm.embed(str(out_path))
 
@@ -604,6 +695,7 @@ async def distribute_watermark(
                     logger.error(f"分发嵌入失败: {name} - {str(e)}")
                 finally:
                     out_path.unlink(missing_ok=True)
+                    person_ori_path.unlink(missing_ok=True)
 
             # 写入名字映射文件（纯 ASCII + UTF-8 内容）
             map_lines = [f"{filename} -> {name}" for filename, name in name_map.items()]
@@ -728,6 +820,44 @@ async def get_wm_length(
         return {"wm_length": wm_len, "text_preview": text[:20]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"计算失败: {str(e)}")
+
+
+@app.post("/api/enhance_light")
+async def enhance_light_watermark(
+    image: UploadFile = File(..., description="可能含超淡水印的图片"),
+):
+    """
+    增强提取超淡水印：上传截图 → 算法放大微弱亮度差异 → 返回增强后的图片
+    用于截图追踪场景：当盲水印提取失败时，可尝试此接口读取淡水印文字
+    """
+    cleanup_old_files()
+
+    image_bytes = await image.read()
+    if len(image_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片大小不能超过 20MB")
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片格式错误: {str(e)}")
+
+    task_id = uuid.uuid4().hex[:12]
+    out_path = TEMP_DIR / f"enhanced_{task_id}.png"
+
+    try:
+        enhanced = _enhance_light_watermark(img)
+        enhanced.save(out_path, "PNG")
+        logger.info(f"增强超淡水印: task={task_id}")
+        return FileResponse(
+            str(out_path),
+            media_type="image/png",
+            filename=f"enhanced_{task_id}.png",
+        )
+    except Exception as e:
+        logger.error(f"增强失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"增强失败: {str(e)}")
 
 
 @app.get("/api/health")
