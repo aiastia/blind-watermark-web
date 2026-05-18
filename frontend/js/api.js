@@ -1,4 +1,7 @@
-const API = window.location.origin;
+// API 基础地址配置
+// 本地/全栈部署：留空，自动用当前域名
+// 分离部署(CF Pages + Railway)：改为 Railway 后端地址，如 'https://xxx.up.railway.app'
+const API = window.__API_URL__ || window.location.origin;
 
 const utils = {
   fmtSize(b) {

@@ -106,6 +106,7 @@
 <footer class="site-footer">基于 <a href="https://github.com/guofei9987/blind_watermark" target="_blank">blind_watermark</a> 开源项目</footer>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="js/config.js"></script>
 <script src="js/api.js"></script>
 <script>
 const { createApp, ref } = Vue;
@@ -148,7 +149,7 @@ createApp({
           fd.append('wm_length', '0');
         } else if (mode.value === 'text') {
           // 文字模式：先算长度
-          const resp = await fetch(`${window.location.origin}/api/wm_length?text=${encodeURIComponent(wmText.value)}&password_wm=${pwdWm.value}`);
+          const resp = await fetch(`${API}/api/wm_length?text=${encodeURIComponent(wmText.value)}&password_wm=${pwdWm.value}`);
           if (!resp.ok) throw new Error('计算水印长度失败');
           const data = await resp.json();
           fd.append('wm_length', data.wm_length);

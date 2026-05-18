@@ -26,4 +26,5 @@ ENV STATIC_DIR=/app/static
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Railway 用 PORT 环境变量，本地默认 8000
+CMD uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}
