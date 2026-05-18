@@ -65,20 +65,9 @@
       <p class="hint" v-else>⚠️ 自定义模式提取时需输入水印比特长度数字</p>
     </div>
 
-    <div class="grid-2" style="margin-bottom:20px;">
+    <div class="grid-2" style="margin-bottom:24px;">
       <div><label>图片密码</label><input type="number" class="input-field" v-model.number="pwdImg" min="1"></div>
       <div><label>水印密码</label><input type="number" class="input-field" v-model.number="pwdWm" min="1"></div>
-    </div>
-
-    <div style="margin-bottom:24px;padding:14px;background:var(--bg-input);border-radius:10px;">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:4px;">
-        <input type="checkbox" v-model="lightWm" style="width:18px;height:18px;accent-color:var(--primary);">
-        <span style="font-weight:500;">💡 超淡水印（截图追踪）</span>
-        <span class="badge" style="background:var(--warning);color:#fff;font-size:10px;">可选</span>
-      </label>
-      <p style="color:var(--text-muted);font-size:12px;margin:0;">
-        在右下角添加肉眼几乎看不到的文字标记，截图后可通过增强算法提取。默认关闭。
-      </p>
     </div>
 
     <button class="btn btn-primary btn-block" :disabled="!file || !text || loading" @click="doEmbed">
@@ -148,7 +137,6 @@ createApp({
     const pwdImg = ref(1), pwdWm = ref(1);
     const loading = ref(false), error = ref(''), result = ref(null);
     const tier = ref('s');
-    const lightWm = ref(false);
     const tiers = [
       { key: 's', icon: '🔷', label: 'S', desc: '≤5中文 / 15数字' },
       { key: 'l', icon: '🔮', label: 'L', desc: '≤15中文 / 47数字' },
@@ -174,7 +162,6 @@ createApp({
       fd.append('image', file.value); fd.append('watermark_text', text.value);
       fd.append('password_img', pwdImg.value); fd.append('password_wm', pwdWm.value);
       if (tier.value) fd.append('tier', tier.value);
-      fd.append('light_watermark', lightWm.value);
       try {
         const { blob, headers } = await utils.fetchBlob('/api/embed', fd);
         const url = URL.createObjectURL(blob);
@@ -185,7 +172,7 @@ createApp({
     function download() { utils.downloadBlob(result.value.url, 'watermarked.png'); }
     function copyInfo() { utils.copyText(`水印长度: ${result.value.wmLen}\n密码: ${pwdImg.value}`); }
 
-    return { file, preview, text, pwdImg, pwdWm, loading, error, result, tier, tiers, lightWm, handleFile, handleDrop, fmtSize, doEmbed, download, copyInfo };
+    return { file, preview, text, pwdImg, pwdWm, loading, error, result, tier, tiers, handleFile, handleDrop, fmtSize, doEmbed, download, copyInfo };
   }
 }).mount('#app');
 </script>

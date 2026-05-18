@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 from blind_watermark import WaterMark
 
 # 复用后端的编码函数和档位配置
-from app import _pad_name, _unpad_name, _get_fixed_wm_length, _ensure_min_size, _add_light_watermark, _enhance_light_watermark, WM_LENGTH_TIERS
+from app import _pad_name, _unpad_name, _get_fixed_wm_length, _ensure_min_size, WM_LENGTH_TIERS
 
 # 日志
 logging.basicConfig(
@@ -50,14 +50,13 @@ TG_DOWNLOAD_MAX_SIZE = 20 * 1024 * 1024  # 20MB (getFile)
     STATE_EMBED_WAIT_IMAGE,
     STATE_EMBED_WAIT_TEXT,
     STATE_EMBED_WAIT_TIER,
-    STATE_EMBED_WAIT_LIGHTWM,
     STATE_EMBED_WAIT_PASSWORD,
     STATE_EXTRACT_WAIT_IMAGE,
     STATE_EXTRACT_WAIT_MODE,
     STATE_EXTRACT_WAIT_TIER,
     STATE_EXTRACT_WAIT_WMLEN,
     STATE_EXTRACT_WAIT_PASSWORD,
-) = range(11)
+) = range(10)
 
 # 用户会话数据
 user_sessions = {}
@@ -211,30 +210,6 @@ async def embed_receive_tier(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_sessions[user_id] = session
 
     await update.message.reply_text(
-        "💡 是否添加超淡水印？\n\n"
-        "在右下角添加肉眼几乎看不到的文字标记，截图后可增强提取。\n"
-        "默认关闭。",
-        reply_markup=ReplyKeyboardMarkup(
-            [["❌ 不添加", "✅ 添加"]],
-            resize_keyboard=True,
-        ),
-    )
-    return STATE_EMBED_WAIT_LIGHTWM
-
-
-async def embed_receive_lightwm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """接收超淡水印选择"""
-    user_id = update.effective_user.id
-    session = user_sessions.get(user_id, {})
-
-    if not session:
-        await update.message.reply_text("会话过期，请重新开始 /start")
-        return ConversationHandler.END
-
-    session["light_watermark"] = (update.message.text == "✅ 添加")
-    user_sessions[user_id] = session
-
-    await update.message.reply_text(
         "🔑 请输入密码（数字），直接发送数字即可。\n"
         "默认密码为 1，直接发送 1 即可：",
         reply_markup=ReplyKeyboardRemove(),
@@ -282,12 +257,6 @@ async def embed_receive_password(update: Update, context: ContextTypes.DEFAULT_T
         bwm.embed(str(out_path))
 
         wm_len = len(bwm.wm_bit)
-
-        # 可选：超淡水印
-        if session.get("light_watermark"):
-            img_out = Image.open(str(out_path))
-            img_out = _add_light_watermark(img_out, wm_text)
-            img_out.save(str(out_path), "PNG")
 
         # 检查输出文件大小
         out_size = out_path.stat().st_size
@@ -611,9 +580,6 @@ def main():
             ],
             STATE_EMBED_WAIT_TIER: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, embed_receive_tier),
-            ],
-            STATE_EMBED_WAIT_LIGHTWM: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, embed_receive_lightwm),
             ],
             STATE_EMBED_WAIT_PASSWORD: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, embed_receive_password),
