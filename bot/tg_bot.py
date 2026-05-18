@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 TEMP_DIR = Path("./temp_bot")
 TEMP_DIR.mkdir(exist_ok=True)
 
+# Telegram Bot API 文件大小限制
+TG_PHOTO_MAX_SIZE = 10 * 1024 * 1024   # 10MB (sendPhoto)
+TG_DOWNLOAD_MAX_SIZE = 20 * 1024 * 1024  # 20MB (getFile)
+
 # 对话状态
 (
     STATE_MENU,
@@ -144,6 +148,17 @@ async def embed_receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE
     photo = update.message.photo[-1]
     file = await photo.get_file()
 
+    # 检查文件大小
+    file_size = file.file_size or 0
+    if file_size > TG_DOWNLOAD_MAX_SIZE:
+        await update.message.reply_text(
+            f"⚠️ 图片太大（{file_size // 1024 // 1024}MB），超过 Bot 下载限制（20MB）\n\n"
+            "💡 请使用网页版处理大文件：\n"
+            "📸 嵌入水印 / 🔍 提取水印\n\n"
+            "发送 /start 重新开始"
+        )
+        return ConversationHandler.END
+
     task_id = uuid.uuid4().hex[:12]
     img_path = TEMP_DIR / f"tg_ori_{user_id}_{task_id}.jpg"
     await file.download_to_drive(str(img_path))
@@ -243,21 +258,35 @@ async def embed_receive_password(update: Update, context: ContextTypes.DEFAULT_T
 
         wm_len = len(bwm.wm_bit)
 
-        with open(str(out_path), "rb") as f:
-            await update.message.reply_photo(
-                photo=f,
-                caption=(
-                    f"✅ 水印嵌入成功！\n\n"
-                    f"📝 水印文字: `{wm_text}`\n"
-                    f"📏 档位: {TIER_LABELS.get(tier, tier)}\n"
-                    f"🔑 密码: `{password}`\n"
-                    f"📏 比特长度: `{wm_len}`\n\n"
-                    f"💡 提取时选择「按档位提取」→ 选 `{TIER_LABELS.get(tier, tier)}` → 输入密码 `{password}` 即可"
-                ),
+        # 检查输出文件大小
+        out_size = out_path.stat().st_size
+        if out_size > TG_PHOTO_MAX_SIZE:
+            await update.message.reply_text(
+                f"⚠️ 嵌入成功，但图片太大（{out_size // 1024 // 1024}MB）超过 Bot 发送限制（10MB）\n\n"
+                "💡 请使用网页版下载带水印的图片\n\n"
+                f"📝 记录信息：\n"
+                f"• 水印文字: `{wm_text}`\n"
+                f"• 档位: {TIER_LABELS.get(tier, tier)}\n"
+                f"• 密码: `{password}`\n"
+                f"• 比特长度: `{wm_len}`",
                 parse_mode="Markdown",
             )
+        else:
+            with open(str(out_path), "rb") as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption=(
+                        f"✅ 水印嵌入成功！\n\n"
+                        f"📝 水印文字: `{wm_text}`\n"
+                        f"📏 档位: {TIER_LABELS.get(tier, tier)}\n"
+                        f"🔑 密码: `{password}`\n"
+                        f"📏 比特长度: `{wm_len}`\n\n"
+                        f"💡 提取时选择「按档位提取」→ 选 `{TIER_LABELS.get(tier, tier)}` → 输入密码 `{password}` 即可"
+                    ),
+                    parse_mode="Markdown",
+                )
 
-        logger.info(f"TG嵌入成功: user={user_id}, task={task_id}, tier={tier}")
+        logger.info(f"TG嵌入成功: user={user_id}, task={task_id}, tier={tier}, out_size={out_size}")
 
     except ValueError as e:
         logger.error(f"TG嵌入失败(名字太长): {str(e)}")
@@ -285,6 +314,16 @@ async def extract_receive_image(update: Update, context: ContextTypes.DEFAULT_TY
 
     photo = update.message.photo[-1]
     file = await photo.get_file()
+
+    # 检查文件大小
+    file_size = file.file_size or 0
+    if file_size > TG_DOWNLOAD_MAX_SIZE:
+        await update.message.reply_text(
+            f"⚠️ 图片太大（{file_size // 1024 // 1024}MB），超过 Bot 下载限制（20MB）\n\n"
+            "💡 请使用网页版提取水印\n\n"
+            "发送 /start 重新开始"
+        )
+        return ConversationHandler.END
 
     task_id = uuid.uuid4().hex[:12]
     img_path = TEMP_DIR / f"tg_extract_{user_id}_{task_id}.jpg"
